@@ -1,0 +1,6 @@
+{
+  "name": "Vent",
+  "description": "Let it out. Let it vanish. Anonymous real-time messaging, self-destructing chats, rich media sharing, and encrypted voice & video calling under zero-knowledge pseudonyms.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

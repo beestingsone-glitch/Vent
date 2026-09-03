@@ -1,0 +1,59 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vent-chat-app",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2024-11-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "single-page-application"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "vent-d1-db",
+      "database_id": "vent-d1-prod-id"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CHAT_ROOM",
+        "class_name": "ChatRoomDO"
+      },
+      {
+        "name": "CALL_SIGNAL",
+        "class_name": "CallSignalingDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_classes": [
+        "ChatRoomDO",
+        "CallSignalingDO"
+      ]
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA_BUCKET",
+      "bucket_name": "vent-media-r2"
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "0 * * * *"
+    ]
+  },
+  "vars": {
+    "ENVIRONMENT": "production",
+    "SUPER_ADMIN_EMAIL": "beestingsone@gmail.com",
+    "JWT_SECRET": "vent-privacy-cloudflare-d1-jwt-super-secret-key-2026"
+  }
+}
