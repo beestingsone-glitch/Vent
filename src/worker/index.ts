@@ -7,7 +7,6 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    // Set CORS headers
     const corsHeaders = {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
@@ -22,28 +21,46 @@ export default {
     // 1. API Endpoints
     if (url.pathname.startsWith('/api')) {
       try {
-        // Conversations list
+        // Conversations list with populated members
         if (url.pathname === '/api/conversations' && request.method === 'GET') {
-          const { results } = await env.DB.prepare('SELECT * FROM conversations ORDER BY created_at DESC').all();
-          return new Response(JSON.stringify(results || []), { headers: corsHeaders });
+          const { results: convs } = await env.DB.prepare(
+            'SELECT * FROM conversations ORDER BY created_at DESC'
+          ).all();
+
+          const populated = await Promise.all(
+            (convs || []).map(async (conv: any) => {
+              const { results: members } = await env.DB.prepare(
+                'SELECT user_id, role FROM conversation_members WHERE conversation_id = ?'
+              ).bind(conv.id).all();
+
+              return {
+                ...conv,
+                members: members && members.length > 0 ? members : [{ user_id: 'usr-super-admin-001', role: 'owner' }],
+              };
+            })
+          );
+
+          return new Response(JSON.stringify(populated), { headers: corsHeaders });
         }
 
-        // Match conversation messages: /api/conversations/:id/messages
+        // Messages for conversation
         const msgMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
-
         if (msgMatch && request.method === 'GET') {
           const convId = msgMatch[1];
           const { results } = await env.DB.prepare(
             'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'
           ).bind(convId).all();
+
           return new Response(JSON.stringify(results || []), { headers: corsHeaders });
         }
 
+        // Send Message
         if (msgMatch && request.method === 'POST') {
           const convId = msgMatch[1];
           const body: any = await request.json();
           const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
           const senderId = body.sender_id || 'usr-super-admin-001';
+          const senderName = body.sender_display_name || 'Vent Master';
           const content = body.content || '';
           const mediaType = body.media_type || 'none';
 
@@ -52,14 +69,16 @@ export default {
           ).bind(id, convId, senderId, content, mediaType).run();
 
           const created = await env.DB.prepare('SELECT * FROM messages WHERE id = ?').bind(id).first();
-          return new Response(JSON.stringify(created), { status: 201, headers: corsHeaders });
+          return new Response(JSON.stringify({ ...created, sender_display_name: senderName }), {
+            status: 201,
+            headers: corsHeaders,
+          });
         }
 
-        // Delete message
-        const delMatch = url.pathname.match(/^\/api\/messages\/([^/]+)$/);
-        if (delMatch && request.method === 'DELETE') {
-          await env.DB.prepare('DELETE FROM messages WHERE id = ?').bind(delMatch[1]).run();
-          return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
+        // Users search
+        if (url.pathname.startsWith('/api/users/search')) {
+          const { results } = await env.DB.prepare('SELECT id, display_name, avatar_url, role, status FROM users').all();
+          return new Response(JSON.stringify(results || []), { headers: corsHeaders });
         }
 
         // Blocked users
@@ -67,7 +86,7 @@ export default {
           return new Response(JSON.stringify([]), { headers: corsHeaders });
         }
 
-        // Read receipts stub
+        // Read receipt
         if (url.pathname.endsWith('/read') && request.method === 'POST') {
           return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
         }
@@ -78,9 +97,11 @@ export default {
       }
     }
 
-    // 2. Reject root WebSocket handshake cleanly so frontend avoids crashing
-    if (request.headers.get('Upgrade') === 'websocket') {
-      return new Response('WebSockets not active on edge worker', { status: 501 });
+    // 2. Mock service worker file if requested to clear the 200 MIME error
+    if (url.pathname === '/sw.js') {
+      return new Response('self.addEventListener("fetch",()=>{});', {
+        headers: { 'Content-Type': 'application/javascript' },
+      });
     }
 
     // 3. Fallback to Vite SPA static assets
