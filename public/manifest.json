@@ -10,26 +10,26 @@
   "description": "Let it out. Let it vanish. Ephemeral private messaging and WebRTC encrypted calls.",
   "icons": [
     {
-      "src": "/icon-192.svg",
+      "src": "/20260902190605.png",
       "sizes": "192x192",
-      "type": "image/svg+xml",
+      "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icon-512.svg",
+      "src": "/20260902190605.png",
       "sizes": "512x512",
-      "type": "image/svg+xml",
+      "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/Gemini_Generated_Image_mydvy6mydvy6mydv.jpeg",
+      "src": "/20260902190605.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
     },
     {
-      "src": "/Gemini_Generated_Image_mydvy6mydvy6mydv.jpeg",
-      "sizes": "192x192",
+      "src": "/launchericon-96x96.png",
+      "sizes": "96x96",
       "type": "image/png",
       "purpose": "any"
     }
