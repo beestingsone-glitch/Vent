@@ -40,6 +40,12 @@
       ]
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA_BUCKET",
+      "bucket_name": "vent-media-r2"
+    }
+  ],
   "triggers": {
     "crons": [
       "0 * * * *"
