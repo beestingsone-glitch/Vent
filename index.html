@@ -8,8 +8,14 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Vent" />
     <meta name="mobile-web-app-capable" content="yes" />
+
+    <!-- Web Manifest -->
     <link rel="manifest" href="/manifest.json" />
-    <link rel="apple-touch-icon" href="/icon-192.svg" />
+
+    <!-- Favicon & Touch Icons -->
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192x192.png" />
+    <link rel="apple-touch-icon" href="/icon-192x192.png" />
+
     <title>Vent | Let it out. Let it vanish.</title>
     <meta name="description" content="Vent — Anonymous real-time encrypted messaging, self-destructing chats, and voice/video calling." />
     <meta property="og:title" content="Vent | Let it out. Let it vanish." />
@@ -20,6 +26,16 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+
+    <!-- Inline Service Worker Registration for PWABuilder & Offline PWA -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch((err) => {
+            console.log('SW registration skipped:', err);
+          });
+        });
+      }
+    </script>
   </body>
 </html>
-
