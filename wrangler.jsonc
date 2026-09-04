@@ -19,33 +19,6 @@
       "database_id": "af16048c-9b59-40c1-84fb-7150d21f1f15"
     }
   ],
-  "durable_objects": {
-    "bindings": [
-      {
-        "name": "CHAT_ROOM",
-        "class_name": "ChatRoomDO"
-      },
-      {
-        "name": "CALL_SIGNAL",
-        "class_name": "CallSignalingDO"
-      }
-    ]
-  },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_classes": [
-        "ChatRoomDO",
-        "CallSignalingDO"
-      ]
-    }
-  ],
-  "r2_buckets": [
-    {
-      "binding": "MEDIA_BUCKET",
-      "bucket_name": "vent-media-r2"
-    }
-  ],
   "triggers": {
     "crons": [
       "0 * * * *"
