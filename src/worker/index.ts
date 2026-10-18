@@ -18,9 +18,37 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // 1. API Endpoints
     if (url.pathname.startsWith('/api')) {
       try {
+        // Upload media handler
+        if (url.pathname === '/api/upload' && request.method === 'POST') {
+          const formData = await request.formData();
+          const file = formData.get('file') as File;
+          if (!file) {
+            return new Response(JSON.stringify({ error: 'No file uploaded' }), { status: 400, headers: corsHeaders });
+          }
+
+          const buffer = await file.arrayBuffer();
+          const base64 = btoa(
+            new Uint8Array(buffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+          );
+          const dataUrl = `data:${file.type};base64,${base64}`;
+
+          let mediaType = 'image';
+          if (file.type.startsWith('video/')) mediaType = 'video';
+          else if (file.type.startsWith('audio/')) mediaType = 'audio';
+
+          return new Response(
+            JSON.stringify({
+              file_url: dataUrl,
+              file_name: file.name,
+              file_size: file.size,
+              media_type: mediaType,
+            }),
+            { headers: corsHeaders }
+          );
+        }
+
         // Conversations list with populated members
         if (url.pathname === '/api/conversations' && request.method === 'GET') {
           const { results: convs } = await env.DB.prepare(
@@ -164,8 +192,6 @@ export default {
         // Users listing and search
         if (url.pathname === '/api/users' || url.pathname.startsWith('/api/users/search')) {
           let { results } = await env.DB.prepare('SELECT id, display_name, avatar_url, role, status FROM users').all();
-          
-          // Fallback demo users if table is empty
           if (!results || results.length === 0) {
             results = [
               { id: 'usr-super-admin-001', display_name: 'Vent Master', avatar_url: null, role: 'admin', status: 'online' },
@@ -173,7 +199,6 @@ export default {
               { id: 'usr-demo-003', display_name: 'Alex Vance', avatar_url: null, role: 'member', status: 'offline' }
             ];
           }
-
           return new Response(JSON.stringify(results), { headers: corsHeaders });
         }
 
@@ -193,14 +218,12 @@ export default {
       }
     }
 
-    // 2. Mock service worker file
     if (url.pathname === '/sw.js') {
       return new Response('self.addEventListener("fetch",()=>{});', {
         headers: { 'Content-Type': 'application/javascript' },
       });
     }
 
-    // 3. Fallback to Vite SPA static assets
     return env.ASSETS.fetch(request);
   },
 };
