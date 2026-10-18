@@ -20,7 +20,38 @@ export default {
 
     if (url.pathname.startsWith('/api')) {
       try {
-        // 1. Upload media endpoint
+        // 1. Admin Overview Metrics
+        if (url.pathname === '/api/admin/overview' || url.pathname === '/api/admin/stats') {
+          const userCount: any = await env.DB.prepare('SELECT COUNT(*) as count FROM users').first();
+          const convCount: any = await env.DB.prepare('SELECT COUNT(*) as count FROM conversations').first();
+          const msgCount: any = await env.DB.prepare('SELECT COUNT(*) as count FROM messages').first();
+          const mediaCount: any = await env.DB.prepare(
+            "SELECT COUNT(*) as count FROM messages WHERE media_url IS NOT NULL AND media_url != ''"
+          ).first();
+
+          return new Response(
+            JSON.stringify({
+              total_users: userCount?.count || 0,
+              active_24h: userCount?.count || 0,
+              total_conversations: convCount?.count || 0,
+              total_messages: msgCount?.count || 0,
+              total_media: mediaCount?.count || 0,
+              storage_used_bytes: (msgCount?.count || 0) * 1024,
+            }),
+            { headers: corsHeaders }
+          );
+        }
+
+        // 2. Admin Users Directory
+        if (url.pathname === '/api/admin/users') {
+          const { results } = await env.DB.prepare(
+            'SELECT id, display_name, email, avatar_url, role, status, ip_address, last_active_at FROM users ORDER BY rowid DESC'
+          ).all();
+
+          return new Response(JSON.stringify(results || []), { headers: corsHeaders });
+        }
+
+        // 3. Upload Media
         if (url.pathname === '/api/upload' && request.method === 'POST') {
           const formData = await request.formData();
           const file = formData.get('file') as File;
@@ -49,7 +80,7 @@ export default {
           );
         }
 
-        // 2. Conversations list
+        // 4. Conversations List
         if (url.pathname === '/api/conversations' && request.method === 'GET') {
           const { results: convs } = await env.DB.prepare(
             'SELECT * FROM conversations ORDER BY created_at DESC'
@@ -71,7 +102,7 @@ export default {
           return new Response(JSON.stringify(populated), { headers: corsHeaders });
         }
 
-        // 3. Create conversation
+        // 5. Create Conversation
         if (url.pathname === '/api/conversations' && request.method === 'POST') {
           const body: any = await request.json();
           const convId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -96,7 +127,7 @@ export default {
           return new Response(JSON.stringify(createdConv), { status: 201, headers: corsHeaders });
         }
 
-        // 4. Update conversation timer
+        // 6. Update Conversation Timer
         const timerMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/timer$/);
         if (timerMatch && request.method === 'PUT') {
           const convId = timerMatch[1];
@@ -112,7 +143,7 @@ export default {
           });
         }
 
-        // 5. Get conversation messages (Includes fallback JOIN to get user names if null)
+        // 7. Messages in Conversation
         const msgMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
         if (msgMatch && request.method === 'GET') {
           const convId = msgMatch[1];
@@ -130,7 +161,7 @@ export default {
           return new Response(JSON.stringify(results || []), { headers: corsHeaders });
         }
 
-        // 6. Send message (Saves sender_display_name and sender_avatar)
+        // 8. Send Message
         if (msgMatch && request.method === 'POST') {
           const convId = msgMatch[1];
           const body: any = await request.json();
@@ -198,7 +229,7 @@ export default {
           );
         }
 
-        // 7. Delete message
+        // 9. Delete Message
         const singleMsgMatch = url.pathname.match(/^\/api\/messages\/([^/]+)$/);
         if (singleMsgMatch && request.method === 'DELETE') {
           const messageId = singleMsgMatch[1];
@@ -206,25 +237,21 @@ export default {
           return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
         }
 
-        // 8. Users
+        // 10. General User List / Search
         if (url.pathname === '/api/users' || url.pathname.startsWith('/api/users/search')) {
-          let { results } = await env.DB.prepare('SELECT id, display_name, avatar_url, role, status FROM users').all();
-          if (!results || results.length === 0) {
-            results = [
-              { id: 'usr-super-admin-001', display_name: 'Vent Master', avatar_url: null, role: 'admin', status: 'online' },
-              { id: 'usr-demo-002', display_name: 'Sarah Connor', avatar_url: null, role: 'member', status: 'online' },
-              { id: 'usr-demo-003', display_name: 'Alex Vance', avatar_url: null, role: 'member', status: 'offline' }
-            ];
-          }
-          return new Response(JSON.stringify(results), { headers: corsHeaders });
+          const { results } = await env.DB.prepare(
+            'SELECT id, display_name, email, avatar_url, role, status FROM users'
+          ).all();
+
+          return new Response(JSON.stringify(results || []), { headers: corsHeaders });
         }
 
-        // 9. Blocked users
+        // 11. Blocked Users
         if (url.pathname === '/api/users/blocked') {
           return new Response(JSON.stringify([]), { headers: corsHeaders });
         }
 
-        // 10. Read receipt
+        // 12. Read Receipt
         if (url.pathname.endsWith('/read') && request.method === 'POST') {
           return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
         }
