@@ -20,7 +20,7 @@ export default {
 
     if (url.pathname.startsWith('/api')) {
       try {
-        // Upload media handler
+        // 1. Upload media endpoint
         if (url.pathname === '/api/upload' && request.method === 'POST') {
           const formData = await request.formData();
           const file = formData.get('file') as File;
@@ -49,7 +49,7 @@ export default {
           );
         }
 
-        // Conversations list with populated members
+        // 2. Conversations list
         if (url.pathname === '/api/conversations' && request.method === 'GET') {
           const { results: convs } = await env.DB.prepare(
             'SELECT * FROM conversations ORDER BY created_at DESC'
@@ -71,7 +71,7 @@ export default {
           return new Response(JSON.stringify(populated), { headers: corsHeaders });
         }
 
-        // Create new Direct or Group Conversation
+        // 3. Create conversation
         if (url.pathname === '/api/conversations' && request.method === 'POST') {
           const body: any = await request.json();
           const convId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -96,7 +96,7 @@ export default {
           return new Response(JSON.stringify(createdConv), { status: 201, headers: corsHeaders });
         }
 
-        // Update conversation timer
+        // 4. Update conversation timer
         const timerMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/timer$/);
         if (timerMatch && request.method === 'PUT') {
           const convId = timerMatch[1];
@@ -112,7 +112,7 @@ export default {
           });
         }
 
-        // Messages for conversation
+        // 5. Get conversation messages
         const msgMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
         if (msgMatch && request.method === 'GET') {
           const convId = msgMatch[1];
@@ -123,14 +123,13 @@ export default {
           return new Response(JSON.stringify(results || []), { headers: corsHeaders });
         }
 
-        // Send Message
+        // 6. Send message (Matched strictly to table schema)
         if (msgMatch && request.method === 'POST') {
           const convId = msgMatch[1];
           const body: any = await request.json();
           const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
           const senderId = body.sender_id || 'usr-super-admin-001';
           const senderName = body.sender_display_name || 'Vent Master';
-          const senderAvatar = body.sender_avatar || null;
           const content = body.content || '';
           const mediaUrl = body.media_url || null;
           const mediaType = body.media_type || (mediaUrl ? 'image' : 'none');
@@ -148,25 +147,31 @@ export default {
           const expiresAt = new Date(Date.now() + durationSeconds * 1000).toISOString();
           const createdAt = new Date().toISOString();
 
+          // Exactly matching columns 0 through 9 from table_info
           await env.DB.prepare(`
             INSERT INTO messages (
-              id, conversation_id, sender_id, sender_display_name, sender_avatar,
-              content, media_url, media_type, media_name, media_size,
-              expires_at, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              id,
+              conversation_id,
+              sender_id,
+              content,
+              media_type,
+              expires_at,
+              created_at,
+              media_url,
+              media_name,
+              media_size
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).bind(
             id,
             convId,
             senderId,
-            senderName,
-            senderAvatar,
             content,
-            mediaUrl,
             mediaType,
-            mediaName,
-            mediaSize,
             expiresAt,
-            createdAt
+            createdAt,
+            mediaUrl,
+            mediaName,
+            mediaSize
           ).run();
 
           const created: any = await env.DB.prepare('SELECT * FROM messages WHERE id = ?').bind(id).first();
@@ -174,14 +179,12 @@ export default {
             JSON.stringify({
               ...created,
               sender_display_name: senderName,
-              media_url: mediaUrl,
-              media_type: mediaType,
             }),
             { status: 201, headers: corsHeaders }
           );
         }
 
-        // Delete single message
+        // 7. Delete message
         const singleMsgMatch = url.pathname.match(/^\/api\/messages\/([^/]+)$/);
         if (singleMsgMatch && request.method === 'DELETE') {
           const messageId = singleMsgMatch[1];
@@ -189,7 +192,7 @@ export default {
           return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
         }
 
-        // Users listing and search
+        // 8. Users
         if (url.pathname === '/api/users' || url.pathname.startsWith('/api/users/search')) {
           let { results } = await env.DB.prepare('SELECT id, display_name, avatar_url, role, status FROM users').all();
           if (!results || results.length === 0) {
@@ -202,12 +205,12 @@ export default {
           return new Response(JSON.stringify(results), { headers: corsHeaders });
         }
 
-        // Blocked users
+        // 9. Blocked users
         if (url.pathname === '/api/users/blocked') {
           return new Response(JSON.stringify([]), { headers: corsHeaders });
         }
 
-        // Read receipt
+        // 10. Read receipt
         if (url.pathname.endsWith('/read') && request.method === 'POST') {
           return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
         }
