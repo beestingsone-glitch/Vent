@@ -77,12 +77,15 @@ export default {
           const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
           const senderId = body.sender_id || 'usr-super-admin-001';
           const senderName = body.sender_display_name || 'Vent Master';
+          const senderAvatar = body.sender_avatar || null;
           const content = body.content || '';
-          const mediaType = body.media_type || 'none';
+          const mediaUrl = body.media_url || null;
+          const mediaType = body.media_type || (mediaUrl ? 'image' : 'none');
+          const mediaName = body.media_name || null;
+          const mediaSize = body.media_size || null;
 
-          // Resolve timer in seconds: from message body, from conversation DB setting, or default 300s (5m)
+          // Timer expiration calculation
           let durationSeconds = parseInt(body.timer_seconds || body.ttl, 10);
-
           if (isNaN(durationSeconds) || durationSeconds <= 0) {
             const conv: any = await env.DB.prepare(
               'SELECT timer_seconds FROM conversations WHERE id = ?'
@@ -91,16 +94,43 @@ export default {
           }
 
           const expiresAt = new Date(Date.now() + durationSeconds * 1000).toISOString();
+          const createdAt = new Date().toISOString();
 
-          await env.DB.prepare(
-            'INSERT INTO messages (id, conversation_id, sender_id, content, media_type, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-          ).bind(id, convId, senderId, content, mediaType, expiresAt, new Date().toISOString()).run();
+          await env.DB.prepare(`
+            INSERT INTO messages (
+              id, conversation_id, sender_id, sender_display_name, sender_avatar,
+              content, media_url, media_type, media_name, media_size,
+              expires_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(
+            id,
+            convId,
+            senderId,
+            senderName,
+            senderAvatar,
+            content,
+            mediaUrl,
+            mediaType,
+            mediaName,
+            mediaSize,
+            expiresAt,
+            createdAt
+          ).run();
 
-          const created = await env.DB.prepare('SELECT * FROM messages WHERE id = ?').bind(id).first();
-          return new Response(JSON.stringify({ ...created, sender_display_name: senderName }), {
-            status: 201,
-            headers: corsHeaders,
-          });
+          const created: any = await env.DB.prepare('SELECT * FROM messages WHERE id = ?').bind(id).first();
+
+          return new Response(
+            JSON.stringify({
+              ...created,
+              sender_display_name: senderName,
+              media_url: mediaUrl,
+              media_type: mediaType,
+            }),
+            {
+              status: 201,
+              headers: corsHeaders,
+            }
+          );
         }
 
         // Delete single message
@@ -133,7 +163,7 @@ export default {
       }
     }
 
-    // 2. Mock service worker file if requested to clear the 200 MIME error
+    // 2. Mock service worker
     if (url.pathname === '/sw.js') {
       return new Response('self.addEventListener("fetch",()=>{});', {
         headers: { 'Content-Type': 'application/javascript' },
