@@ -37,6 +37,7 @@ interface ChatContextType {
     media_type?: MediaType;
     media_name?: string;
     media_size?: number;
+    timer_seconds?: number;
   }) => Promise<void>;
   sendTyping: (isTyping: boolean) => void;
   createConversation: (
@@ -384,13 +385,22 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     media_type?: MediaType;
     media_name?: string;
     media_size?: number;
+    timer_seconds?: number;
   }) => {
     if (!activeConversationId || !user) return;
 
     sendTyping(false);
 
+    // Resolve active conversation timer (defaults to params, then conversation setting, then 300s / 5m)
+    const effectiveTimerSeconds =
+      params.timer_seconds !== undefined
+        ? params.timer_seconds
+        : activeConversation?.timer_seconds || 300;
+
     const payload = {
       ...params,
+      timer_seconds: effectiveTimerSeconds,
+      ttl: effectiveTimerSeconds,
       sender_id: user.id,
       sender_display_name: user.display_name,
       sender_avatar: user.avatar_url,
@@ -421,6 +431,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       media_type: params.media_type || 'none',
       media_name: params.media_name,
       media_size: params.media_size,
+      timer_seconds: effectiveTimerSeconds,
     });
     setMessages((prev) => [...prev, localMsg]);
     refreshConversations();
