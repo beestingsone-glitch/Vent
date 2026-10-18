@@ -252,4 +252,433 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
     function connect() {
       try {
-        const protocol = window.location.protocol
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}`;
+
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          ws.send(JSON.stringify({ type: 'auth', payload: { token } }));
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const msg: WSMessage<any> = JSON.parse(event.data);
+
+            switch (msg.type) {
+              case 'presence_sync':
+                setOnlineUserIds(msg.payload?.onlineUserIds || []);
+                break;
+
+              case 'user_status':
+                refreshConversations();
+                break;
+
+              case 'new_message': {
+                const newMsg: Message = msg.payload;
+
+                if (newMsg.conversation_id === activeConversationId) {
+                  setMessages((prev) => {
+                    if (prev.some((m) => m.id === newMsg.id)) return prev;
+                    return [...prev, newMsg];
+                  });
+                }
+
+                if (newMsg.sender_id !== user.id) {
+                  playChime();
+                }
+
+                refreshConversations();
+                break;
+              }
+
+              case 'user_typing': {
+                const { conversation_id, user_id, display_name, is_typing } = msg.payload;
+                setTypingMap((prev) => {
+                  const convTyping = { ...(prev[conversation_id] || {}) };
+                  if (is_typing) {
+                    convTyping[user_id] = { userId: user_id, displayName: display_name };
+                  } else {
+                    delete convTyping[user_id];
+                  }
+                  return { ...prev, [conversation_id]: convTyping };
+                });
+                break;
+              }
+
+              case 'message_deleted': {
+                const { message_id } = msg.payload;
+                setMessages((prev) => prev.filter((m) => m.id !== message_id));
+                break;
+              }
+
+              case 'conversation_cleared': {
+                const { conversation_id } = msg.payload;
+                if (activeConversationId === conversation_id) {
+                  setMessages([]);
+                }
+                refreshConversations();
+                break;
+              }
+
+              case 'conversation_deleted': {
+                const { conversation_id } = msg.payload;
+                if (activeConversationId === conversation_id) {
+                  setActiveConversationId(null);
+                  setMessages([]);
+                }
+                refreshConversations();
+                break;
+              }
+
+              case 'timer_updated': {
+                const { conversation_id, timer_seconds } = msg.payload;
+                setConversations((prev) =>
+                  prev.map((c) => (c.id === conversation_id ? { ...c, timer_seconds } : c))
+                );
+                break;
+              }
+            }
+          } catch (parseErr) {
+            console.error('WS parse error', parseErr);
+          }
+        };
+
+        ws.onclose = () => {
+          if (!isUnmounted) {
+            reconnectTimeoutRef.current = setTimeout(connect, 5000);
+          }
+        };
+
+        ws.onerror = () => {
+          ws.close();
+        };
+      } catch (err) {
+        console.warn('WS setup skipped', err);
+      }
+    }
+
+    connect();
+
+    return () => {
+      isUnmounted = true;
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      if (wsRef.current) wsRef.current.close();
+    };
+  }, [token, user, activeConversationId, refreshConversations, isLocalMode]);
+
+  // Client-Side Immediate Vanish Ticker
+  useEffect(() => {
+    if (!messages.length) return;
+
+    const purgeTicker = setInterval(() => {
+      const now = Date.now();
+      const expiredMsgs = messages.filter(
+        (m) => m.expires_at && new Date(m.expires_at).getTime() <= now
+      );
+
+      if (expiredMsgs.length > 0) {
+        const expiredIds = new Set(expiredMsgs.map((m) => m.id));
+        setMessages((prev) => prev.filter((m) => !expiredIds.has(m.id)));
+
+        expiredMsgs.forEach((msg) => {
+          safeFetchJson(`/api/messages/${msg.id}`, {
+            method: 'DELETE',
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+          }).catch(() => {});
+        });
+      }
+    }, 500);
+
+    return () => clearInterval(purgeTicker);
+  }, [messages, token]);
+
+  const sendMessage = async (params: {
+    content?: string;
+    media_url?: string;
+    media_type?: MediaType;
+    media_name?: string;
+    media_size?: number;
+    timer_seconds?: number;
+  }) => {
+    if (!activeConversationId || !user) return;
+
+    sendTyping(false);
+
+    const effectiveTimerSeconds =
+      params.timer_seconds !== undefined
+        ? params.timer_seconds
+        : activeConversation?.timer_seconds || 300;
+
+    const payload = {
+      ...params,
+      timer_seconds: effectiveTimerSeconds,
+      ttl: effectiveTimerSeconds,
+      sender_id: user.id,
+      sender_display_name: user.display_name,
+      sender_avatar: user.avatar_url,
+    };
+
+    const res = await safeFetchJson<Message>(`/api/conversations/${activeConversationId}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (res.ok && res.data) {
+      // Ensure media attributes from input parameters are retained on state commit
+      const fullMessage: Message = {
+        ...res.data,
+        media_url: res.data.media_url || params.media_url,
+        media_type: res.data.media_type || params.media_type || 'none',
+        media_name: res.data.media_name || params.media_name,
+        media_size: res.data.media_size || params.media_size,
+      };
+
+      setMessages((prev) => [...prev, fullMessage]);
+      refreshConversations();
+      return;
+    }
+
+    const localMsg = localSendMessage({
+      conversation_id: activeConversationId,
+      sender_id: user.id,
+      sender_display_name: user.display_name,
+      sender_avatar: user.avatar_url,
+      content: params.content || '',
+      media_url: params.media_url,
+      media_type: params.media_type || 'none',
+      media_name: params.media_name,
+      media_size: params.media_size,
+      timer_seconds: effectiveTimerSeconds,
+    });
+    setMessages((prev) => [...prev, localMsg]);
+    refreshConversations();
+  };
+
+  const sendTyping = (isTyping: boolean) => {
+    if (!activeConversationId || !wsRef.current || !user) return;
+    if (wsRef.current.readyState !== WebSocket.OPEN) return;
+
+    wsRef.current.send(
+      JSON.stringify({
+        type: 'typing',
+        payload: {
+          conversation_id: activeConversationId,
+          display_name: user.display_name,
+          is_typing: isTyping,
+        },
+      })
+    );
+
+    if (isTyping) {
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = setTimeout(() => {
+        sendTyping(false);
+      }, 4000);
+    }
+  };
+
+  const createConversation = async (
+    type: 'direct' | 'group',
+    memberIds: string[],
+    name?: string,
+    avatarUrl?: string
+  ): Promise<Conversation> => {
+    if (!user) throw new Error('Not authenticated');
+
+    const res = await safeFetchJson<Conversation>('/api/conversations', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        type,
+        member_ids: memberIds,
+        name,
+        avatar_url: avatarUrl,
+      }),
+    });
+
+    if (res.ok && res.data) {
+      await refreshConversations();
+      setActiveConversationId(res.data.id);
+      return res.data;
+    }
+
+    const localConv = localCreateConversation({
+      creator_id: user.id,
+      type,
+      member_ids: memberIds,
+      name,
+      avatar_url: avatarUrl,
+    });
+    await refreshConversations();
+    setActiveConversationId(localConv.id);
+    return localConv;
+  };
+
+  const deleteMessage = async (messageId: string) => {
+    await safeFetchJson(`/api/messages/${messageId}`, {
+      method: 'DELETE',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+
+    localDeleteMessage(messageId);
+    setMessages((prev) => prev.filter((m) => m.id !== messageId));
+  };
+
+  const clearConversation = async (conversationId: string) => {
+    await safeFetchJson(`/api/conversations/${conversationId}/clear`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+
+    localClearConversation(conversationId);
+    if (activeConversationId === conversationId) {
+      setMessages([]);
+    }
+    setConversations((prev) =>
+      prev.map((c) => (c.id === conversationId ? { ...c, last_message: undefined } : c))
+    );
+  };
+
+  const deleteConversation = async (conversationId: string) => {
+    await safeFetchJson(`/api/conversations/${conversationId}`, {
+      method: 'DELETE',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+
+    localDeleteConversation(conversationId);
+    if (activeConversationId === conversationId) {
+      setActiveConversationId(null);
+      setMessages([]);
+    }
+    setConversations((prev) => prev.filter((c) => c.id !== conversationId));
+  };
+
+  const blockUser = async (targetUserId: string) => {
+    if (!user) return;
+
+    await safeFetchJson(`/api/users/${targetUserId}/block`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+
+    localBlockUser(user.id, targetUserId);
+    setBlockedUserIds((prev) => Array.from(new Set([...prev, targetUserId])));
+  };
+
+  const unblockUser = async (targetUserId: string) => {
+    if (!user) return;
+
+    await safeFetchJson(`/api/users/${targetUserId}/unblock`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+
+    localUnblockUser(user.id, targetUserId);
+    setBlockedUserIds((prev) => prev.filter((id) => id !== targetUserId));
+  };
+
+  const setConversationTimer = async (conversationId: string, timerSeconds: number) => {
+    await safeFetchJson(`/api/conversations/${conversationId}/timer`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ timer_seconds: timerSeconds }),
+    });
+
+    localSetConversationTimer(conversationId, timerSeconds);
+    setConversations((prev) =>
+      prev.map((c) => (c.id === conversationId ? { ...c, timer_seconds: timerSeconds } : c))
+    );
+  };
+
+  const uploadMedia = async (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const res = await safeFetchJson<{
+      file_url: string;
+      file_name: string;
+      file_size: number;
+      media_type: MediaType;
+    }>('/api/upload', {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: formData,
+    });
+
+    if (res.ok && res.data?.file_url) {
+      return res.data;
+    }
+
+    // Local client-side fallback to Base64 data URL
+    return new Promise<{
+      file_url: string;
+      file_name: string;
+      file_size: number;
+      media_type: MediaType;
+    }>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        let type: MediaType = 'image';
+        if (file.type.startsWith('video/')) type = 'video';
+        else if (file.type.startsWith('audio/')) type = 'audio';
+
+        resolve({
+          file_url: reader.result as string,
+          file_name: file.name,
+          file_size: file.size,
+          media_type: type,
+        });
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
+  return (
+    <ChatContext.Provider
+      value={{
+        conversations,
+        activeConversation,
+        messages,
+        isLoadingMessages,
+        onlineUserIds,
+        typingUsers: activeTyping,
+        blockedUserIds,
+        setActiveConversationId,
+        sendMessage,
+        sendTyping,
+        createConversation,
+        deleteMessage,
+        clearConversation,
+        deleteConversation,
+        blockUser,
+        unblockUser,
+        setConversationTimer,
+        refreshConversations,
+        uploadMedia,
+      }}
+    >
+      {children}
+    </ChatContext.Provider>
+  );
+}
+
+export function useChat() {
+  const context = useContext(ChatContext);
+  if (!context) {
+    throw new Error('useChat must be used within a ChatProvider');
+  }
+  return context;
+}
