@@ -43,6 +43,22 @@ export default {
           return new Response(JSON.stringify(populated), { headers: corsHeaders });
         }
 
+        // Update conversation timer
+        const timerMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/timer$/);
+        if (timerMatch && request.method === 'PUT') {
+          const convId = timerMatch[1];
+          const body: any = await request.json();
+          const timerSeconds = parseInt(body.timer_seconds, 10) || 300;
+
+          await env.DB.prepare(
+            'UPDATE conversations SET timer_seconds = ? WHERE id = ?'
+          ).bind(timerSeconds, convId).run();
+
+          return new Response(JSON.stringify({ success: true, timer_seconds: timerSeconds }), {
+            headers: corsHeaders,
+          });
+        }
+
         // Messages for conversation
         const msgMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
         if (msgMatch && request.method === 'GET') {
@@ -64,15 +80,35 @@ export default {
           const content = body.content || '';
           const mediaType = body.media_type || 'none';
 
+          // Resolve timer in seconds: from message body, from conversation DB setting, or default 300s (5m)
+          let durationSeconds = parseInt(body.timer_seconds || body.ttl, 10);
+
+          if (isNaN(durationSeconds) || durationSeconds <= 0) {
+            const conv: any = await env.DB.prepare(
+              'SELECT timer_seconds FROM conversations WHERE id = ?'
+            ).bind(convId).first();
+            durationSeconds = conv?.timer_seconds ? parseInt(conv.timer_seconds, 10) : 300;
+          }
+
+          const expiresAt = new Date(Date.now() + durationSeconds * 1000).toISOString();
+
           await env.DB.prepare(
-            'INSERT INTO messages (id, conversation_id, sender_id, content, media_type, expires_at) VALUES (?, ?, ?, ?, ?, datetime("now", "+3 days"))'
-          ).bind(id, convId, senderId, content, mediaType).run();
+            'INSERT INTO messages (id, conversation_id, sender_id, content, media_type, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+          ).bind(id, convId, senderId, content, mediaType, expiresAt, new Date().toISOString()).run();
 
           const created = await env.DB.prepare('SELECT * FROM messages WHERE id = ?').bind(id).first();
           return new Response(JSON.stringify({ ...created, sender_display_name: senderName }), {
             status: 201,
             headers: corsHeaders,
           });
+        }
+
+        // Delete single message
+        const singleMsgMatch = url.pathname.match(/^\/api\/messages\/([^/]+)$/);
+        if (singleMsgMatch && request.method === 'DELETE') {
+          const messageId = singleMsgMatch[1];
+          await env.DB.prepare('DELETE FROM messages WHERE id = ?').bind(messageId).run();
+          return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
         }
 
         // Users search
