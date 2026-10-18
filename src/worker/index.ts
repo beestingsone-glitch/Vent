@@ -112,24 +112,32 @@ export default {
           });
         }
 
-        // 5. Get conversation messages
+        // 5. Get conversation messages (Includes fallback JOIN to get user names if null)
         const msgMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
         if (msgMatch && request.method === 'GET') {
           const convId = msgMatch[1];
-          const { results } = await env.DB.prepare(
-            'SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'
-          ).bind(convId).all();
+          const { results } = await env.DB.prepare(`
+            SELECT 
+              m.*,
+              COALESCE(m.sender_display_name, u.display_name, 'Vent Member') AS sender_display_name,
+              COALESCE(m.sender_avatar, u.avatar_url) AS sender_avatar
+            FROM messages m
+            LEFT JOIN users u ON m.sender_id = u.id
+            WHERE m.conversation_id = ?
+            ORDER BY m.created_at ASC
+          `).bind(convId).all();
 
           return new Response(JSON.stringify(results || []), { headers: corsHeaders });
         }
 
-        // 6. Send message (Matched strictly to table schema)
+        // 6. Send message (Saves sender_display_name and sender_avatar)
         if (msgMatch && request.method === 'POST') {
           const convId = msgMatch[1];
           const body: any = await request.json();
           const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
           const senderId = body.sender_id || 'usr-super-admin-001';
           const senderName = body.sender_display_name || 'Vent Master';
+          const senderAvatar = body.sender_avatar || null;
           const content = body.content || '';
           const mediaUrl = body.media_url || null;
           const mediaType = body.media_type || (mediaUrl ? 'image' : 'none');
@@ -147,12 +155,13 @@ export default {
           const expiresAt = new Date(Date.now() + durationSeconds * 1000).toISOString();
           const createdAt = new Date().toISOString();
 
-          // Exactly matching columns 0 through 9 from table_info
           await env.DB.prepare(`
             INSERT INTO messages (
               id,
               conversation_id,
               sender_id,
+              sender_display_name,
+              sender_avatar,
               content,
               media_type,
               expires_at,
@@ -160,11 +169,13 @@ export default {
               media_url,
               media_name,
               media_size
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).bind(
             id,
             convId,
             senderId,
+            senderName,
+            senderAvatar,
             content,
             mediaType,
             expiresAt,
@@ -179,6 +190,9 @@ export default {
             JSON.stringify({
               ...created,
               sender_display_name: senderName,
+              sender_avatar: senderAvatar,
+              media_url: mediaUrl,
+              media_type: mediaType,
             }),
             { status: 201, headers: corsHeaders }
           );
