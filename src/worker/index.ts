@@ -43,6 +43,31 @@ export default {
           return new Response(JSON.stringify(populated), { headers: corsHeaders });
         }
 
+        // Create new Direct or Group Conversation
+        if (url.pathname === '/api/conversations' && request.method === 'POST') {
+          const body: any = await request.json();
+          const convId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+          const type = body.type || 'direct';
+          const name = body.name || (type === 'group' ? 'New Group' : 'Direct Chat');
+          const avatarUrl = body.avatar_url || null;
+          const memberIds: string[] = body.member_ids || [];
+
+          await env.DB.prepare(`
+            INSERT INTO conversations (id, type, name, avatar_url, timer_seconds, created_at)
+            VALUES (?, ?, ?, ?, 300, datetime('now'))
+          `).bind(convId, type, name, avatarUrl).run();
+
+          for (const mId of memberIds) {
+            await env.DB.prepare(`
+              INSERT OR IGNORE INTO conversation_members (conversation_id, user_id, role)
+              VALUES (?, ?, 'member')
+            `).bind(convId, mId).run();
+          }
+
+          const createdConv = await env.DB.prepare('SELECT * FROM conversations WHERE id = ?').bind(convId).first();
+          return new Response(JSON.stringify(createdConv), { status: 201, headers: corsHeaders });
+        }
+
         // Update conversation timer
         const timerMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/timer$/);
         if (timerMatch && request.method === 'PUT') {
@@ -84,7 +109,6 @@ export default {
           const mediaName = body.media_name || null;
           const mediaSize = body.media_size || null;
 
-          // Timer expiration calculation
           let durationSeconds = parseInt(body.timer_seconds || body.ttl, 10);
           if (isNaN(durationSeconds) || durationSeconds <= 0) {
             const conv: any = await env.DB.prepare(
@@ -118,7 +142,6 @@ export default {
           ).run();
 
           const created: any = await env.DB.prepare('SELECT * FROM messages WHERE id = ?').bind(id).first();
-
           return new Response(
             JSON.stringify({
               ...created,
@@ -126,10 +149,7 @@ export default {
               media_url: mediaUrl,
               media_type: mediaType,
             }),
-            {
-              status: 201,
-              headers: corsHeaders,
-            }
+            { status: 201, headers: corsHeaders }
           );
         }
 
@@ -141,10 +161,20 @@ export default {
           return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
         }
 
-        // Users search
-        if (url.pathname.startsWith('/api/users/search')) {
-          const { results } = await env.DB.prepare('SELECT id, display_name, avatar_url, role, status FROM users').all();
-          return new Response(JSON.stringify(results || []), { headers: corsHeaders });
+        // Users listing and search
+        if (url.pathname === '/api/users' || url.pathname.startsWith('/api/users/search')) {
+          let { results } = await env.DB.prepare('SELECT id, display_name, avatar_url, role, status FROM users').all();
+          
+          // Fallback demo users if table is empty
+          if (!results || results.length === 0) {
+            results = [
+              { id: 'usr-super-admin-001', display_name: 'Vent Master', avatar_url: null, role: 'admin', status: 'online' },
+              { id: 'usr-demo-002', display_name: 'Sarah Connor', avatar_url: null, role: 'member', status: 'online' },
+              { id: 'usr-demo-003', display_name: 'Alex Vance', avatar_url: null, role: 'member', status: 'offline' }
+            ];
+          }
+
+          return new Response(JSON.stringify(results), { headers: corsHeaders });
         }
 
         // Blocked users
@@ -163,7 +193,7 @@ export default {
       }
     }
 
-    // 2. Mock service worker
+    // 2. Mock service worker file
     if (url.pathname === '/sw.js') {
       return new Response('self.addEventListener("fetch",()=>{});', {
         headers: { 'Content-Type': 'application/javascript' },
