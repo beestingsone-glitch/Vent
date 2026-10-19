@@ -231,9 +231,39 @@ export default {
           const base64 = btoa(
             new Uint8Array(buffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
           );
+
+          const mediaType = file.type.startsWith('image/')
+            ? 'image'
+            : file.type.startsWith('video/')
+            ? 'video'
+            : file.type.startsWith('audio/')
+            ? 'audio'
+            : 'file';
+
           return new Response(
             JSON.stringify({
               file_url: `data:${file.type};base64,${base64}`,
               file_name: file.name,
               file_size: file.size,
-              media_type: file.type.startsWith('
+              media_type: mediaType,
+            }),
+            { headers: corsHeaders }
+          );
+        }
+
+        return new Response(JSON.stringify({ error: 'API route not found' }), {
+          status: 404,
+          headers: corsHeaders,
+        });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ error: err.message || 'Internal Server Error' }), {
+          status: 500,
+          headers: corsHeaders,
+        });
+      }
+    }
+
+    // Fallback: serve frontend static assets
+    return env.ASSETS.fetch(request);
+  },
+};
