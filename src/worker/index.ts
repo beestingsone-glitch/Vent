@@ -20,67 +20,7 @@ export default {
 
     if (url.pathname.startsWith('/api')) {
       try {
-        // 1. Admin Overview Metrics
-        if (url.pathname === '/api/admin/overview' || url.pathname === '/api/admin/stats') {
-          const userCount: any = await env.DB.prepare('SELECT COUNT(*) as count FROM users').first();
-          const convCount: any = await env.DB.prepare('SELECT COUNT(*) as count FROM conversations').first();
-          const msgCount: any = await env.DB.prepare('SELECT COUNT(*) as count FROM messages').first();
-          const mediaCount: any = await env.DB.prepare(
-            "SELECT COUNT(*) as count FROM messages WHERE media_url IS NOT NULL AND media_url != ''"
-          ).first();
-
-          return new Response(
-            JSON.stringify({
-              total_users: userCount?.count || 0,
-              active_24h: userCount?.count || 0,
-              total_conversations: convCount?.count || 0,
-              total_messages: msgCount?.count || 0,
-              total_media: mediaCount?.count || 0,
-              storage_used_bytes: (msgCount?.count || 0) * 1024,
-            }),
-            { headers: corsHeaders }
-          );
-        }
-
-        // 2. Admin Users Directory
-        if (url.pathname === '/api/admin/users') {
-          const { results } = await env.DB.prepare(
-            'SELECT id, display_name, email, avatar_url, role, status, ip_address, last_active_at FROM users ORDER BY rowid DESC'
-          ).all();
-
-          return new Response(JSON.stringify(results || []), { headers: corsHeaders });
-        }
-
-        // 3. Upload Media
-        if (url.pathname === '/api/upload' && request.method === 'POST') {
-          const formData = await request.formData();
-          const file = formData.get('file') as File;
-          if (!file) {
-            return new Response(JSON.stringify({ error: 'No file uploaded' }), { status: 400, headers: corsHeaders });
-          }
-
-          const buffer = await file.arrayBuffer();
-          const base64 = btoa(
-            new Uint8Array(buffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
-          );
-          const dataUrl = `data:${file.type};base64,${base64}`;
-
-          let mediaType = 'image';
-          if (file.type.startsWith('video/')) mediaType = 'video';
-          else if (file.type.startsWith('audio/')) mediaType = 'audio';
-
-          return new Response(
-            JSON.stringify({
-              file_url: dataUrl,
-              file_name: file.name,
-              file_size: file.size,
-              media_type: mediaType,
-            }),
-            { headers: corsHeaders }
-          );
-        }
-
-        // 4. Conversations List
+        // 1. Get all conversations with participant members
         if (url.pathname === '/api/conversations' && request.method === 'GET') {
           const { results: convs } = await env.DB.prepare(
             'SELECT * FROM conversations ORDER BY created_at DESC'
@@ -88,9 +28,12 @@ export default {
 
           const populated = await Promise.all(
             (convs || []).map(async (conv: any) => {
-              const { results: members } = await env.DB.prepare(
-                'SELECT user_id, role FROM conversation_members WHERE conversation_id = ?'
-              ).bind(conv.id).all();
+              const { results: members } = await env.DB.prepare(`
+                SELECT cm.user_id, cm.role, u.display_name, u.avatar_url
+                FROM conversation_members cm
+                LEFT JOIN users u ON cm.user_id = u.id
+                WHERE cm.conversation_id = ?
+              `).bind(conv.id).all();
 
               return {
                 ...conv,
@@ -102,14 +45,30 @@ export default {
           return new Response(JSON.stringify(populated), { headers: corsHeaders });
         }
 
-        // 5. Create Conversation
+        // 2. Create or Retrieve Direct / Group Conversation
         if (url.pathname === '/api/conversations' && request.method === 'POST') {
           const body: any = await request.json();
-          const convId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
           const type = body.type || 'direct';
+          const memberIds: string[] = body.member_ids || [];
           const name = body.name || (type === 'group' ? 'New Group' : 'Direct Chat');
           const avatarUrl = body.avatar_url || null;
-          const memberIds: string[] = body.member_ids || [];
+
+          // If direct chat between 2 users, check if existing room already exists
+          if (type === 'direct' && memberIds.length === 2) {
+            const existing: any = await env.DB.prepare(`
+              SELECT c.* FROM conversations c
+              JOIN conversation_members cm1 ON c.id = cm1.conversation_id AND cm1.user_id = ?
+              JOIN conversation_members cm2 ON c.id = cm2.conversation_id AND cm2.user_id = ?
+              WHERE c.type = 'direct'
+              LIMIT 1
+            `).bind(memberIds[0], memberIds[1]).first();
+
+            if (existing) {
+              return new Response(JSON.stringify(existing), { status: 200, headers: corsHeaders });
+            }
+          }
+
+          const convId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
           await env.DB.prepare(`
             INSERT INTO conversations (id, type, name, avatar_url, timer_seconds, created_at)
@@ -127,7 +86,7 @@ export default {
           return new Response(JSON.stringify(createdConv), { status: 201, headers: corsHeaders });
         }
 
-        // 6. Update Conversation Timer
+        // 3. Update Conversation Timer
         const timerMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/timer$/);
         if (timerMatch && request.method === 'PUT') {
           const convId = timerMatch[1];
@@ -143,7 +102,7 @@ export default {
           });
         }
 
-        // 7. Messages in Conversation
+        // 4. Messages in Conversation
         const msgMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
         if (msgMatch && request.method === 'GET') {
           const convId = msgMatch[1];
@@ -161,7 +120,7 @@ export default {
           return new Response(JSON.stringify(results || []), { headers: corsHeaders });
         }
 
-        // 8. Send Message
+        // 5. Send Message
         if (msgMatch && request.method === 'POST') {
           const convId = msgMatch[1];
           const body: any = await request.json();
@@ -188,18 +147,9 @@ export default {
 
           await env.DB.prepare(`
             INSERT INTO messages (
-              id,
-              conversation_id,
-              sender_id,
-              sender_display_name,
-              sender_avatar,
-              content,
-              media_type,
-              expires_at,
-              created_at,
-              media_url,
-              media_name,
-              media_size
+              id, conversation_id, sender_id, sender_display_name, sender_avatar,
+              content, media_type, expires_at, created_at,
+              media_url, media_name, media_size
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).bind(
             id,
@@ -229,7 +179,7 @@ export default {
           );
         }
 
-        // 9. Delete Message
+        // 6. Delete Message
         const singleMsgMatch = url.pathname.match(/^\/api\/messages\/([^/]+)$/);
         if (singleMsgMatch && request.method === 'DELETE') {
           const messageId = singleMsgMatch[1];
@@ -237,21 +187,78 @@ export default {
           return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
         }
 
-        // 10. General User List / Search
+        // 7. Users List & Search
         if (url.pathname === '/api/users' || url.pathname.startsWith('/api/users/search')) {
-          const { results } = await env.DB.prepare(
+          let { results } = await env.DB.prepare(
             'SELECT id, display_name, email, avatar_url, role, status FROM users'
           ).all();
 
+          if (!results || results.length === 0) {
+            results = [
+              { id: 'usr-super-admin-001', display_name: 'Vent Master', email: 'admin@vent.live', avatar_url: null, role: 'admin', status: 'online' },
+              { id: 'usr-lama1', display_name: 'lama1', email: 'lama1@vent.live', avatar_url: null, role: 'member', status: 'online' },
+              { id: 'usr-demo-002', display_name: 'Sarah Connor', email: 'sarah@vent.live', avatar_url: null, role: 'member', status: 'online' },
+              { id: 'usr-demo-003', display_name: 'Alex Vance', email: 'alex@vent.live', avatar_url: null, role: 'member', status: 'offline' }
+            ];
+          }
+
+          return new Response(JSON.stringify(results), { headers: corsHeaders });
+        }
+
+        // 8. Admin Overview
+        if (url.pathname === '/api/admin/overview' || url.pathname === '/api/admin/stats') {
+          const userCount: any = await env.DB.prepare('SELECT COUNT(*) as count FROM users').first();
+          const convCount: any = await env.DB.prepare('SELECT COUNT(*) as count FROM conversations').first();
+          const msgCount: any = await env.DB.prepare('SELECT COUNT(*) as count FROM messages').first();
+          const mediaCount: any = await env.DB.prepare(
+            "SELECT COUNT(*) as count FROM messages WHERE media_url IS NOT NULL AND media_url != ''"
+          ).first();
+
+          return new Response(
+            JSON.stringify({
+              total_users: userCount?.count || 0,
+              active_24h: userCount?.count || 0,
+              total_conversations: convCount?.count || 0,
+              total_messages: msgCount?.count || 0,
+              total_media: mediaCount?.count || 0,
+              storage_used_bytes: (msgCount?.count || 0) * 1024,
+            }),
+            { headers: corsHeaders }
+          );
+        }
+
+        // 9. Admin Users
+        if (url.pathname === '/api/admin/users') {
+          const { results } = await env.DB.prepare(
+            'SELECT id, display_name, email, avatar_url, role, status FROM users'
+          ).all();
           return new Response(JSON.stringify(results || []), { headers: corsHeaders });
         }
 
-        // 11. Blocked Users
-        if (url.pathname === '/api/users/blocked') {
-          return new Response(JSON.stringify([]), { headers: corsHeaders });
+        // 10. Upload
+        if (url.pathname === '/api/upload' && request.method === 'POST') {
+          const formData = await request.formData();
+          const file = formData.get('file') as File;
+          if (!file) {
+            return new Response(JSON.stringify({ error: 'No file uploaded' }), { status: 400, headers: corsHeaders });
+          }
+
+          const buffer = await file.arrayBuffer();
+          const base64 = btoa(
+            new Uint8Array(buffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+          );
+          return new Response(
+            JSON.stringify({
+              file_url: `data:${file.type};base64,${base64}`,
+              file_name: file.name,
+              file_size: file.size,
+              media_type: file.type.startsWith('video/') ? 'video' : 'image',
+            }),
+            { headers: corsHeaders }
+          );
         }
 
-        // 12. Read Receipt
+        // 11. Read receipt
         if (url.pathname.endsWith('/read') && request.method === 'POST') {
           return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
         }
