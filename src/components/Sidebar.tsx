@@ -15,6 +15,8 @@ import {
   Ban,
   UserCheck,
   LogOut,
+  CheckSquare,
+  Check,
 } from 'lucide-react';
 import { useChat } from '../context/ChatContext.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
@@ -68,6 +70,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
     convName: '',
     isLoading: false,
   });
+
+  // Bulk select / delete mode state
+  const [isSelectMode, setIsSelectMode] = useState(false);
+  const [selectedConvIds, setSelectedConvIds] = useState<string[]>([]);
+  const [bulkDelete, setBulkDelete] = useState<{
+    isOpen: boolean;
+    ids: string[];
+    isLoading: boolean;
+  }>({ isOpen: false, ids: [], isLoading: false });
 
   // Close context menu when clicking outside
   useEffect(() => {
@@ -133,6 +144,39 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
+  const enterSelectMode = () => {
+    setSearchQuery('');
+    setFilterType('all');
+    setSelectedConvIds([]);
+    setOpenMenuConvId(null);
+    setIsSelectMode(true);
+  };
+
+  const exitSelectMode = () => {
+    setIsSelectMode(false);
+    setSelectedConvIds([]);
+  };
+
+  const toggleSelectConv = (convId: string) => {
+    setSelectedConvIds((prev) =>
+      prev.includes(convId) ? prev.filter((id) => id !== convId) : [...prev, convId]
+    );
+  };
+
+  const handleBulkDelete = async () => {
+    const ids = bulkDelete.ids;
+    if (ids.length === 0) return;
+    setBulkDelete((prev) => ({ ...prev, isLoading: true }));
+    try {
+      await Promise.all(ids.map((id) => deleteConversation(id)));
+    } catch (err: any) {
+      alert(err?.message || 'Delete failed');
+    } finally {
+      setBulkDelete({ isOpen: false, ids: [], isLoading: false });
+      exitSelectMode();
+    }
+  };
+
   const handleToggleBlock = async (otherUserId: string, isBlocked: boolean, e: React.MouseEvent) => {
     e.stopPropagation();
     setOpenMenuConvId(null);
@@ -190,15 +234,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <span>{t('all')}</span>
           </div>
 
-          <button
-            id="btn-sidebar-new-chat"
-            onClick={onOpenNewChat}
-            className="p-1.5 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/30 text-xs font-semibold flex items-center gap-1 transition cursor-pointer"
-            title={t('new_chat_group')}
-          >
-            <Plus className="w-4 h-4" />
-            <span className="text-xs">{t('new_chat_group')}</span>
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              id="btn-sidebar-select-chats"
+              onClick={enterSelectMode}
+              className="p-1.5 rounded-lg bg-slate-700/40 hover:bg-slate-700/70 text-slate-300 border border-slate-700/60 text-xs font-semibold flex items-center gap-1 transition cursor-pointer"
+              title={t('select_chats')}
+            >
+              <CheckSquare className="w-4 h-4" />
+              <span className="text-xs hidden sm:inline">{t('select_chats')}</span>
+            </button>
+            <button
+              id="btn-sidebar-new-chat"
+              onClick={onOpenNewChat}
+              className="p-1.5 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/30 text-xs font-semibold flex items-center gap-1 transition cursor-pointer"
+              title={t('new_chat_group')}
+            >
+              <Plus className="w-4 h-4" />
+              <span className="text-xs">{t('new_chat_group')}</span>
+            </button>
+          </div>
         </div>
 
         {/* Search Bar */}
@@ -329,11 +384,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
             const otherUserId = otherMember?.user_id;
             const isBlocked = otherUserId ? blockedUserIds.includes(otherUserId) : false;
             const isMenuOpen = openMenuConvId === conv.id;
+            const isSelected = selectedConvIds.includes(conv.id);
 
             return (
               <div
                 key={conv.id}
                 onClick={() => {
+                  if (isSelectMode) {
+                    toggleSelectConv(conv.id);
+                    return;
+                  }
                   setActiveConversationId(conv.id);
                   if (onSelectConversationMobile) onSelectConversationMobile();
                 }}
@@ -344,8 +404,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 }`}
               >
                 {/* Active Indicator Bar */}
-                {isActive && (
+                {isActive && !isSelectMode && (
                   <div className="absolute left-0 top-0 bottom-0 w-1 bg-cyan-500 rounded-r" />
+                )}
+
+                {/* Selection Checkbox */}
+                {isSelectMode && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleSelectConv(conv.id);
+                    }}
+                    className={`shrink-0 w-5 h-5 rounded-md border flex items-center justify-center transition cursor-pointer ${
+                      isSelected
+                        ? 'bg-cyan-600 border-cyan-500'
+                        : 'border-slate-600 bg-slate-800 hover:border-slate-400'
+                    }`}
+                    title={t('select_chats')}
+                  >
+                    {isSelected && <Check className="w-3.5 h-3.5 text-white" />}
+                  </button>
                 )}
 
                 {/* Avatar with Presence */}
@@ -428,6 +507,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       )}
 
                       {/* 3-Dots Action Menu Trigger */}
+                      {!isSelectMode && (
                       <div className="relative">
                         <button
                           id={`btn-menu-conv-${conv.id}`}
@@ -513,6 +593,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           </div>
                         )}
                       </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -521,6 +602,52 @@ export const Sidebar: React.FC<SidebarProps> = ({
           })
         )}
       </div>
+
+      {/* Bulk Select Action Bar */}
+      {isSelectMode && (
+        <div className="p-3 bg-slate-950 border-t border-slate-800 shrink-0 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-slate-300 font-semibold">
+              {selectedConvIds.length} {t('selected')}
+            </span>
+            <button
+              type="button"
+              onClick={exitSelectMode}
+              className="px-2.5 py-1 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition cursor-pointer"
+            >
+              {t('cancel')}
+            </button>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                setBulkDelete({
+                  isOpen: true,
+                  ids: filteredConversations.map((c) => c.id),
+                  isLoading: false,
+                })
+              }
+              disabled={filteredConversations.length === 0}
+              className="flex-1 px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 disabled:opacity-40 disabled:cursor-not-allowed text-rose-400 hover:text-rose-300 border border-rose-500/20 text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              {t('delete_all_chats')}
+            </button>
+            <button
+              type="button"
+              disabled={selectedConvIds.length === 0}
+              onClick={() =>
+                setBulkDelete({ isOpen: true, ids: selectedConvIds, isLoading: false })
+              }
+              className="flex-1 px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer shadow-lg shadow-rose-950/40"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              {t('delete_selected')} ({selectedConvIds.length})
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* User Footer & Prominent Sign Out */}
       <div className="p-3 bg-slate-950 border-t border-slate-800 flex items-center justify-between gap-2 shrink-0">
@@ -581,6 +708,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
         onClose={() =>
           setModalConfig({ isOpen: false, type: 'clear', convId: '', convName: '', isLoading: false })
         }
+      />
+
+      {/* Bulk Delete Confirm Modal */}
+      <ConfirmModal
+        isOpen={bulkDelete.isOpen}
+        title={t('delete_chat') + '?'}
+        description={`Are you sure you want to permanently delete ${bulkDelete.ids.length} chat${bulkDelete.ids.length === 1 ? '' : 's'}? This cannot be undone.`}
+        confirmText={t('delete_chat')}
+        confirmVariant="danger"
+        isLoading={bulkDelete.isLoading}
+        onConfirm={handleBulkDelete}
+        onClose={() => setBulkDelete({ isOpen: false, ids: [], isLoading: false })}
       />
     </aside>
   );
