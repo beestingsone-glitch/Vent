@@ -629,7 +629,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
                           <td className="p-3.5">
                             <div className="text-slate-300">{u.last_ip || '127.0.0.1'}</div>
                             <div className="text-[10px] text-slate-500">
-                              {new Date(u.last_active_at).toLocaleString()}
+                              {u.last_active_at ? new Date(u.last_active_at).toLocaleString() : '—'}
                             </div>
                           </td>
 
