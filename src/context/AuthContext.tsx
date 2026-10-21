@@ -4,6 +4,7 @@ import {
   initLocalStore,
   localLogin,
   localSignup,
+  localImportServerUser,
   localGetMe,
   localUpdateProfile,
   localResetPassword,
@@ -144,7 +145,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = async (email: string, password: string) => {
     const trimmedEmail = email.trim().toLowerCase();
     const trimmedPass = password.trim();
-    const result = localLogin(trimmedEmail, trimmedPass);
+    let result: { user: AuthUser; token: string };
+    try {
+      result = localLogin(trimmedEmail, trimmedPass);
+    } catch (err: any) {
+      // No local copy of this account on this device: it may be a server
+      // account (e.g. the Google Play review account). Verify it with the
+      // server, then import it so this device treats it like its own.
+      if (!/account not found/i.test(err?.message || '')) throw err;
+      const res = await safeFetchJson<{
+        id: string;
+        email: string;
+        display_name?: string;
+        avatar_url?: string;
+        bio?: string;
+        role?: string;
+        status?: string;
+      }>('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: trimmedEmail, password: trimmedPass }),
+      }).catch(() => null);
+      if (!res || !res.ok || !res.data) throw err;
+      result = localImportServerUser(res.data, trimmedPass);
+    }
     const lightweight = sanitizeLightweightUser(result.user);
     safeSetItem(LOCAL_CURRENT_USER_KEY, JSON.stringify(lightweight));
     safeSetItem(TOKEN_KEY, result.token);
