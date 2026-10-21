@@ -351,14 +351,13 @@ export default {
           const avatarUrl = body.avatar_url ? body.avatar_url.toString().slice(0, 600) : null;
           const bio = body.bio ? body.bio.toString().slice(0, 200) : null;
           await env.DB.prepare(`
-            INSERT INTO users (id, email, display_name, avatar_url, bio, last_active_at)
-            VALUES (?, ?, ?, ?, ?, datetime('now'))
+            INSERT INTO users (id, email, display_name, avatar_url, bio)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               email = excluded.email,
               display_name = excluded.display_name,
               avatar_url = excluded.avatar_url,
-              bio = excluded.bio,
-              last_active_at = datetime('now')
+              bio = excluded.bio
           `).bind(callerId, caller.email || null, displayName, avatarUrl, bio).run();
           return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
         }
@@ -367,7 +366,7 @@ export default {
         if (url.pathname === '/api/users/search' && request.method === 'GET') {
           const q = (url.searchParams.get('q') || '').trim();
           const { results } = await env.DB.prepare(`
-            SELECT id, display_name, avatar_url, bio, status, last_active_at
+            SELECT id, display_name, avatar_url, bio, status
             FROM users
             WHERE id != ? AND (? = '' OR display_name LIKE '%' || ? || '%')
             ORDER BY display_name ASC
@@ -413,7 +412,7 @@ export default {
             };
             const totalUsers = await count('SELECT COUNT(*) AS n FROM users');
             const active24h = await count(
-              "SELECT COUNT(*) AS n FROM users WHERE last_active_at >= datetime('now', '-24 hours')"
+              "SELECT COUNT(DISTINCT sender_id) AS n FROM messages WHERE created_at >= datetime('now', '-24 hours')"
             );
             const totalConversations = await count('SELECT COUNT(*) AS n FROM conversations');
             const totalMessages = await count('SELECT COUNT(*) AS n FROM messages');
@@ -449,10 +448,10 @@ export default {
               FROM users u
               ORDER BY u.display_name ASC
             `).all();
-            const mapped = (results || []).map((u: any) => ({
-              ...u,
-              is_banned: !!u.is_banned,
-            }));
+            const mapped = (results || []).map((u: any) => {
+              const { password_hash, ...rest } = u;
+              return { ...rest, is_banned: !!u.is_banned };
+            });
             return new Response(JSON.stringify(mapped), { headers: corsHeaders });
           }
 
