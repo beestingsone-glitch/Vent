@@ -87,6 +87,21 @@ export default {
             /* directory lookup failed; owner check above still applies */
           }
         }
+        if (!isAdmin) {
+          // Per-account admin grants (work for device-only accounts too,
+          // which have no row in the users table to carry a role)
+          try {
+            await env.DB.prepare(
+              'CREATE TABLE IF NOT EXISTS admin_users (user_id TEXT PRIMARY KEY, granted_by TEXT, created_at TEXT)'
+            ).run();
+            const grant: any = await env.DB.prepare(
+              'SELECT 1 AS ok FROM admin_users WHERE user_id = ?'
+            ).bind(callerId).first();
+            if (grant) isAdmin = true;
+          } catch {
+            /* grants lookup failed; other checks above still apply */
+          }
+        }
 
         // True when the caller belongs to the conversation. Legacy
         // conversations with no member rows at all stay visible to the
@@ -381,7 +396,10 @@ export default {
             'SELECT id, email, display_name, avatar_url, bio, role, status FROM users WHERE id = ?'
           ).bind(callerId).first();
           if (row) {
-            return new Response(JSON.stringify(row), { headers: corsHeaders });
+            return new Response(
+              JSON.stringify({ ...row, role: isAdmin ? 'admin' : row.role || 'user' }),
+              { headers: corsHeaders }
+            );
           }
           return new Response(
             JSON.stringify({
@@ -492,10 +510,23 @@ export default {
               FROM users u
               ORDER BY u.display_name ASC
             `).all();
+            let grantedAdmins = new Set<string>();
+            try {
+              await env.DB.prepare(
+                'CREATE TABLE IF NOT EXISTS admin_users (user_id TEXT PRIMARY KEY, granted_by TEXT, created_at TEXT)'
+              ).run();
+              const { results: grantRows } = await env.DB.prepare(
+                'SELECT user_id FROM admin_users'
+              ).all();
+              grantedAdmins = new Set((grantRows || []).map((g: any) => g.user_id));
+            } catch {
+              /* grants unavailable; fall back to stored roles */
+            }
             const mapped = (results || []).map((u: any) => {
               const { password_hash, ...rest } = u;
               return {
                 ...rest,
+                role: grantedAdmins.has(u.id) ? 'admin' : u.role,
                 is_banned: !!u.is_banned,
                 last_active_at: u.last_active_at || u.created_at || null,
               };
@@ -572,7 +603,7 @@ export default {
                 display_name: nameById.get(m.id) || 'Device account',
                 avatar_url: null,
                 bio: null,
-                role: 'user',
+                role: grantedAdmins.has(m.id) ? 'admin' : 'user',
                 status: 'offline',
                 is_banned: false,
                 created_at: null,
@@ -607,6 +638,19 @@ export default {
                 JSON.stringify({ error: 'The owner account always stays admin' }),
                 { status: 400, headers: corsHeaders }
               );
+            }
+            // Stamp the role on the users row when one exists, and always
+            // record the grant per account id — device-only accounts have
+            // no users row, and the promotion must still stick for them.
+            await env.DB.prepare(
+              'CREATE TABLE IF NOT EXISTS admin_users (user_id TEXT PRIMARY KEY, granted_by TEXT, created_at TEXT)'
+            ).run();
+            if (role === 'admin') {
+              await env.DB.prepare(
+                "INSERT OR REPLACE INTO admin_users (user_id, granted_by, created_at) VALUES (?, ?, datetime('now'))"
+              ).bind(targetId, caller.email || callerId).run();
+            } else {
+              await env.DB.prepare('DELETE FROM admin_users WHERE user_id = ?').bind(targetId).run();
             }
             await env.DB.prepare('UPDATE users SET role = ? WHERE id = ?').bind(role, targetId).run();
             await logAudit(
