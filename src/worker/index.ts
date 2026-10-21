@@ -512,6 +512,17 @@ export default {
             return new Response(JSON.stringify(results || []), { headers: corsHeaders });
           }
 
+          // Join a conversation as a member (Audit Console "Open Chat")
+          const adminJoinMatch = url.pathname.match(/^\/api\/admin\/conversations\/([^/]+)\/join$/);
+          if (adminJoinMatch && request.method === 'POST') {
+            const convId = adminJoinMatch[1];
+            await env.DB.prepare(
+              "INSERT OR IGNORE INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, 'member')"
+            ).bind(convId, callerId).run();
+            await logAudit('join_conversation', convId, 'Admin joined conversation from the Audit Console');
+            return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
+          }
+
           // Media library: every message that carries a file
           if (url.pathname === '/api/admin/media' && request.method === 'GET') {
             const { results } = await env.DB.prepare(`
