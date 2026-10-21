@@ -1,6 +1,37 @@
 export interface Env {
   DB: D1Database;
   ASSETS: { fetch: (request: Request) => Promise<Response> };
+  SUPER_ADMIN_EMAIL?: string;
+}
+
+// Vent accounts are device-local: the app identifies the caller with a
+// "local-jwt-" token whose payload is base64 JSON { id, email }.
+// Decode it to learn who is asking, then only serve conversations and
+// messages to the people who are actually members of them.
+function parseCaller(request: Request): { id: string; email: string } | null {
+  const auth = request.headers.get('Authorization') || '';
+  const match = auth.match(/^Bearer\s+(.+)$/i);
+  if (!match) return null;
+  let token = match[1].trim();
+  if (token.startsWith('local-jwt-')) {
+    token = token.slice('local-jwt-'.length);
+  } else if (token.includes('.')) {
+    // Standard JWT shape: decode the payload segment.
+    token = token.split('.')[1] || '';
+    token = token.replace(/-/g, '+').replace(/_/g, '/');
+  }
+  try {
+    const parsed = JSON.parse(atob(token));
+    if (parsed && typeof parsed.id === 'string' && parsed.id.length > 0) {
+      return {
+        id: parsed.id,
+        email: typeof parsed.email === 'string' ? parsed.email : '',
+      };
+    }
+  } catch {
+    /* not a token format we recognise */
+  }
+  return null;
 }
 
 export default {
@@ -30,13 +61,61 @@ export default {
 
     if (url.pathname.startsWith('/api')) {
       try {
+        // Every API route requires a signed-in caller, and conversation
+        // data is only ever served to that conversation's members.
+        const caller = parseCaller(request);
+        if (!caller) {
+          return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+            status: 401,
+            headers: corsHeaders,
+          });
+        }
+        const callerId = caller.id;
+        const adminEmail = (env.SUPER_ADMIN_EMAIL || 'beestingsone@gmail.com').toLowerCase();
+        const isAdmin =
+          callerId === 'usr-super-admin-001' ||
+          (caller.email && caller.email.toLowerCase() === adminEmail);
+
+        // True when the caller belongs to the conversation. Legacy
+        // conversations with no member rows at all stay visible to the
+        // admin only, never to everyone.
+        const canAccessConversation = async (convId: string): Promise<boolean> => {
+          const member: any = await env.DB.prepare(
+            'SELECT 1 AS ok FROM conversation_members WHERE conversation_id = ? AND user_id = ?'
+          ).bind(convId, callerId).first();
+          if (member) return true;
+          if (isAdmin) {
+            const anyMember: any = await env.DB.prepare(
+              'SELECT 1 AS ok FROM conversation_members WHERE conversation_id = ? LIMIT 1'
+            ).bind(convId).first();
+            if (!anyMember) return true;
+          }
+          return false;
+        };
+
+        const forbidden = () =>
+          new Response(JSON.stringify({ error: 'Forbidden: not a member of this conversation' }), {
+            status: 403,
+            headers: corsHeaders,
+          });
+
         // --- CONVERSATIONS ---
 
-        // Get all conversations with participant details
+        // Get only the caller's own conversations, with participant details
         if (url.pathname === '/api/conversations' && request.method === 'GET') {
-          const { results: convs } = await env.DB.prepare(
-            'SELECT * FROM conversations ORDER BY created_at DESC'
-          ).all();
+          const { results: convs } = await env.DB.prepare(`
+            SELECT * FROM conversations c
+            WHERE EXISTS (
+              SELECT 1 FROM conversation_members cm
+              WHERE cm.conversation_id = c.id AND cm.user_id = ?
+            )
+            OR (
+              ? = 1 AND NOT EXISTS (
+                SELECT 1 FROM conversation_members cm2 WHERE cm2.conversation_id = c.id
+              )
+            )
+            ORDER BY c.created_at DESC
+          `).bind(callerId, isAdmin ? 1 : 0).all();
 
           const populated = await Promise.all(
             (convs || []).map(async (conv: any) => {
@@ -49,7 +128,7 @@ export default {
 
               return {
                 ...conv,
-                members: members && members.length > 0 ? members : [{ user_id: 'usr-super-admin-001', role: 'owner' }],
+                members: members || [],
               };
             })
           );
@@ -61,7 +140,9 @@ export default {
         if (url.pathname === '/api/conversations' && request.method === 'POST') {
           const body: any = await request.json();
           const type = body.type || 'direct';
-          const memberIds: string[] = body.member_ids || [];
+          const memberIds: string[] = Array.from(
+            new Set([...(body.member_ids || []), callerId])
+          );
           const name = body.name || (type === 'group' ? 'New Group' : 'Direct Chat');
           const avatarUrl = body.avatar_url || null;
 
@@ -102,6 +183,7 @@ export default {
         const timerMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/timer$/);
         if (timerMatch && request.method === 'PUT') {
           const convId = timerMatch[1];
+          if (!(await canAccessConversation(convId))) return forbidden();
           const body: any = await request.json();
           const timerSeconds = parseInt(body.timer_seconds, 10) || 300;
 
@@ -118,6 +200,7 @@ export default {
         const clearMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/clear$/);
         if (clearMatch && request.method === 'POST') {
           const convId = clearMatch[1];
+          if (!(await canAccessConversation(convId))) return forbidden();
           await env.DB.prepare('DELETE FROM messages WHERE conversation_id = ?').bind(convId).run();
           return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
         }
@@ -126,6 +209,7 @@ export default {
         const deleteConvMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)$/);
         if (deleteConvMatch && request.method === 'DELETE') {
           const convId = deleteConvMatch[1];
+          if (!(await canAccessConversation(convId))) return forbidden();
           await env.DB.prepare('DELETE FROM messages WHERE conversation_id = ?').bind(convId).run();
           await env.DB.prepare('DELETE FROM conversation_members WHERE conversation_id = ?').bind(convId).run();
           await env.DB.prepare('DELETE FROM conversations WHERE id = ?').bind(convId).run();
@@ -134,12 +218,13 @@ export default {
 
         // --- MESSAGES ---
 
-        // Get messages for a specific conversation
+        // Get messages for a specific conversation (members only)
         const msgMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
         if (msgMatch && request.method === 'GET') {
           const convId = msgMatch[1];
+          if (!(await canAccessConversation(convId))) return forbidden();
           const { results } = await env.DB.prepare(`
-            SELECT 
+            SELECT
               m.*,
               COALESCE(m.sender_display_name, u.display_name, 'Vent Member') AS sender_display_name,
               COALESCE(m.sender_avatar, u.avatar_url) AS sender_avatar
@@ -152,12 +237,13 @@ export default {
           return new Response(JSON.stringify(results || []), { headers: corsHeaders });
         }
 
-        // Send a message
+        // Send a message (members only, always sent as the caller)
         if (msgMatch && request.method === 'POST') {
           const convId = msgMatch[1];
+          if (!(await canAccessConversation(convId))) return forbidden();
           const body: any = await request.json();
           const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-          const senderId = body.sender_id || 'usr-super-admin-001';
+          const senderId = callerId;
           const senderName = body.sender_display_name || 'Vent Master';
           const senderAvatar = body.sender_avatar || null;
           const content = body.content || '';
@@ -211,10 +297,14 @@ export default {
           );
         }
 
-        // Delete a single message
+        // Delete a single message (only its sender, or the admin)
         const singleMsgMatch = url.pathname.match(/^\/api\/messages\/([^/]+)$/);
         if (singleMsgMatch && request.method === 'DELETE') {
           const messageId = singleMsgMatch[1];
+          const msg: any = await env.DB.prepare(
+            'SELECT sender_id FROM messages WHERE id = ?'
+          ).bind(messageId).first();
+          if (msg && msg.sender_id !== callerId && !isAdmin) return forbidden();
           await env.DB.prepare('DELETE FROM messages WHERE id = ?').bind(messageId).run();
           return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
         }
