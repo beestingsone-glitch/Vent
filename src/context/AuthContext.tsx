@@ -9,6 +9,7 @@ import {
   localResetPassword,
   localPanicWipe,
 } from '../lib/localStore.ts';
+import { safeFetchJson } from '../lib/api.ts';
 import {
   safeGetItem,
   safeSetItem,
@@ -107,6 +108,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     setIsLoading(false);
   }, []);
+
+  // Keep this account listed in the server user directory, so other real
+  // users can find it by search (and it stops being invisible server-side).
+  useEffect(() => {
+    if (!user || !token) return;
+    safeFetchJson('/api/users/register', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        display_name: user.display_name,
+        avatar_url: user.avatar_url,
+        bio: user.bio,
+      }),
+    }).catch(() => {});
+  }, [user, token]);
 
   // 100% Client-Side Pure Browser Sign In
   const login = async (email: string, password: string) => {
