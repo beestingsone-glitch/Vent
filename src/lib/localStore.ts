@@ -253,6 +253,65 @@ export function localLogin(email: string, pass: string): { user: AuthUser; token
   return { user: lightweightUser, token };
 }
 
+// Import a server-verified account into this device's local store (used
+// when a server account — e.g. the Play review account — signs in on a
+// device that has no local copy yet). After the import, the account
+// behaves exactly like a locally created one on this device.
+export function localImportServerUser(
+  profile: {
+    id: string;
+    email: string;
+    display_name?: string;
+    avatar_url?: string;
+    bio?: string;
+    role?: string;
+    status?: string;
+  },
+  password: string
+): { user: AuthUser; token: string } {
+  initLocalStore();
+  const cleanEmail = profile.email.trim().toLowerCase();
+  const users = getStored<LocalUserRecord[]>(LOCAL_USERS_KEY, []);
+  const existing = users.find((u) => u.email.trim().toLowerCase() === cleanEmail);
+
+  let record: LocalUserRecord;
+  if (existing) {
+    record = {
+      ...existing,
+      display_name: profile.display_name || existing.display_name,
+      avatar_url: profile.avatar_url || existing.avatar_url,
+      password_hash: password,
+    };
+    const updated = users.map((u) => (u.id === existing.id ? record : u));
+    setStored(LOCAL_USERS_KEY, updated);
+    setStored(LEGACY_USERS_KEY, updated);
+  } else {
+    record = {
+      id: profile.id,
+      email: cleanEmail,
+      display_name: profile.display_name || 'Vent Member',
+      avatar_url:
+        profile.avatar_url ||
+        `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(profile.display_name || 'Vent Member')}`,
+      bio: profile.bio || 'Encrypted pseudonymous member',
+      role: cleanEmail === 'beestingsone@gmail.com' ? 'admin' : 'user',
+      status: 'online',
+      password_hash: password,
+    };
+    users.push(record);
+    setStored(LOCAL_USERS_KEY, users);
+    setStored(LEGACY_USERS_KEY, users);
+  }
+
+  const token = 'local-jwt-' + btoa(JSON.stringify({ id: record.id, email: record.email }));
+  const { password_hash: _, ...safeUser } = record;
+  const lightweightUser = sanitizeLightweightUser(safeUser);
+  safeSetItem(LOCAL_CURRENT_USER_KEY, JSON.stringify(lightweightUser));
+  safeSetItem('chat_token', token);
+
+  return { user: lightweightUser, token };
+}
+
 export function localResetPassword(email: string, newPassword: string): { user: AuthUser; token: string } {
   initLocalStore();
   const cleanEmail = email.trim().toLowerCase();
