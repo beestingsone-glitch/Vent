@@ -549,6 +549,23 @@ export default {
                   else if (nameById.has(b) && !nameById.has(a)) nameById.set(a, conv.name);
                 }
               }
+              // Second rule: in a chat where every member but one is known
+              // and the chat's name matches none of them, the name belongs
+              // to the remaining member (covers chats an admin joined from
+              // the Audit Console, which adds a third member).
+              for (let pass = 0; pass < 3; pass++) {
+                for (const conv of directConvs || []) {
+                  const ms = membersOf.get(conv.id) || [];
+                  const unnamed = ms.filter((id) => !nameById.has(id));
+                  if (unnamed.length !== 1) continue;
+                  const othersNames = ms
+                    .filter((id) => id !== unnamed[0])
+                    .map((id) => nameById.get(id));
+                  if (othersNames.every((n) => n && n !== conv.name)) {
+                    nameById.set(unnamed[0], conv.name);
+                  }
+                }
+              }
               extras = deviceRows.map((m: any) => ({
                 id: m.id,
                 email: null,
