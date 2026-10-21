@@ -47,13 +47,6 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ onClose }) => {
     const timer = setTimeout(async () => {
       setIsLoading(true);
 
-      if (isLocalMode || token.startsWith('local-jwt-')) {
-        const localResults = localSearchUsers(searchQuery, user.id);
-        setUsersList(localResults);
-        setIsLoading(false);
-        return;
-      }
-
       const res = await safeFetchJson<PublicUser[]>(
         `/api/users/search?q=${encodeURIComponent(searchQuery.trim())}`,
         {
@@ -65,7 +58,12 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ onClose }) => {
         // Exclude current user from results
         setUsersList(res.data.filter((u) => u.id !== user.id));
       } else {
-        const localResults = localSearchUsers(searchQuery, user.id);
+        // Offline fallback: device-local accounts only, and never the
+        // built-in demo profiles (ShadowRaven, NeonViper, CipherFox...).
+        const SEED_USER_IDS = ['user-admin-1', 'user-shadow-2', 'user-viper-3', 'user-cipher-4'];
+        const localResults = localSearchUsers(searchQuery, user.id).filter(
+          (u) => !SEED_USER_IDS.includes(u.id)
+        );
         setUsersList(localResults);
       }
       setIsLoading(false);
