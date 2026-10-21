@@ -24,6 +24,7 @@ import {
   Flame,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
+import { useChat } from '../context/ChatContext.tsx';
 import {
   AdminStats,
   AdminUser,
@@ -46,6 +47,7 @@ interface AdminPanelProps {
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
   const { token, user, isAdmin } = useAuth();
+  const { setActiveConversationId, refreshConversations } = useChat();
   const [activeTab, setActiveTab] = useState<'users' | 'messages' | 'storage' | 'logs'>('users');
 
   // Hard authorization barrier
@@ -195,6 +197,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
     fetchUsers();
     fetchStats();
     setTimeout(() => setActionMessage(null), 3000);
+  };
+
+  const handleOpenInChat = async (convId: string) => {
+    if (!token) return;
+    // Join the thread as a member first, so it shows up in the normal
+    // chat list and the privacy rules let this account read/post in it.
+    await safeFetchJson(`/api/admin/conversations/${convId}/join`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    await refreshConversations();
+    setActiveConversationId(convId);
+    onClose();
   };
 
   const handleDeleteUser = async (targetUserId: string, displayName: string) => {
@@ -649,7 +664,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
 
               <div className="flex-1 overflow-y-auto space-y-1.5 pr-1 divide-y divide-slate-800/40">
                 {conversations.map((c) => (
-                  <button
+                  <div
                     key={c.id}
                     onClick={() => setSelectedConvId(c.id)}
                     className={`w-full text-left p-3 rounded-xl transition cursor-pointer flex items-center gap-3 ${
@@ -679,7 +694,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
                         {c.members.map((m) => m.display_name).join(', ')}
                       </p>
                     </div>
-                  </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleOpenInChat(c.id);
+                      }}
+                      className="px-2.5 py-1 rounded-md bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-semibold shrink-0 transition cursor-pointer"
+                    >
+                      Open Chat
+                    </button>
+                  </div>
                 ))}
               </div>
             </div>
