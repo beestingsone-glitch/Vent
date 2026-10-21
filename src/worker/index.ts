@@ -445,7 +445,11 @@ export default {
               const row: any = await env.DB.prepare(sql).bind(...binds).first();
               return row && typeof row.n === 'number' ? row.n : 0;
             };
-            const totalUsers = await count('SELECT COUNT(*) AS n FROM users');
+            const registeredCount = await count('SELECT COUNT(*) AS n FROM users');
+            const deviceOnlyCount = await count(
+              'SELECT COUNT(DISTINCT user_id) AS n FROM conversation_members WHERE user_id NOT IN (SELECT id FROM users)'
+            );
+            const totalUsers = registeredCount + deviceOnlyCount;
             const active24h = await count(
               "SELECT COUNT(DISTINCT sender_id) AS n FROM messages WHERE created_at >= datetime('now', '-24 hours')"
             );
@@ -474,7 +478,12 @@ export default {
             );
           }
 
-          // Full user directory with activity counts
+          // Full user directory with activity counts. Besides registered
+          // users it also lists device-only accounts: Vent accounts live on
+          // each device, so a person can appear in chats (conversation
+          // members) without ever having a row in the users table. Their
+          // names are recovered from chat records (message sender names
+          // and direct-chat names) until the account registers itself.
           if (url.pathname === '/api/admin/users' && request.method === 'GET') {
             const { results } = await env.DB.prepare(`
               SELECT u.*,
@@ -485,9 +494,82 @@ export default {
             `).all();
             const mapped = (results || []).map((u: any) => {
               const { password_hash, ...rest } = u;
-              return { ...rest, is_banned: !!u.is_banned };
+              return {
+                ...rest,
+                is_banned: !!u.is_banned,
+                last_active_at: u.last_active_at || u.created_at || null,
+              };
             });
-            return new Response(JSON.stringify(mapped), { headers: corsHeaders });
+
+            // Device-only accounts: conversation members with no users row
+            const { results: deviceRows } = await env.DB.prepare(`
+              SELECT cm.user_id AS id,
+                COUNT(DISTINCT cm.conversation_id) AS conversation_count,
+                (SELECT COUNT(*) FROM messages mm WHERE mm.sender_id = cm.user_id) AS message_count
+              FROM conversation_members cm
+              LEFT JOIN users u ON u.id = cm.user_id
+              WHERE u.id IS NULL
+              GROUP BY cm.user_id
+            `).all();
+
+            let extras: any[] = [];
+            if (deviceRows && deviceRows.length > 0) {
+              const nameById = new Map<string, string>();
+              for (const u of mapped) {
+                if (u.display_name) nameById.set(u.id, u.display_name);
+              }
+              const { results: snaps } = await env.DB.prepare(
+                'SELECT DISTINCT sender_id, sender_display_name FROM messages WHERE sender_display_name IS NOT NULL'
+              ).all();
+              for (const s of snaps || []) {
+                if (!nameById.has(s.sender_id)) nameById.set(s.sender_id, s.sender_display_name);
+              }
+              const { results: allMembers } = await env.DB.prepare(
+                'SELECT conversation_id, user_id FROM conversation_members'
+              ).all();
+              const membersOf = new Map<string, string[]>();
+              for (const m of allMembers || []) {
+                const arr = membersOf.get(m.conversation_id) || [];
+                arr.push(m.user_id);
+                membersOf.set(m.conversation_id, arr);
+              }
+              const { results: directConvs } = await env.DB.prepare(
+                "SELECT id, name FROM conversations WHERE type = 'direct' AND name IS NOT NULL"
+              ).all();
+              // A direct chat is named after a participant; when one side is
+              // known, the chat name identifies the other side. A few passes
+              // resolve chains (e.g. a name learned in one chat names the
+              // partner in the next).
+              for (let pass = 0; pass < 3; pass++) {
+                for (const conv of directConvs || []) {
+                  const ms = membersOf.get(conv.id) || [];
+                  if (ms.length !== 2) continue;
+                  const [a, b] = ms;
+                  if (nameById.has(a) && !nameById.has(b)) nameById.set(b, conv.name);
+                  else if (nameById.has(b) && !nameById.has(a)) nameById.set(a, conv.name);
+                }
+              }
+              extras = deviceRows.map((m: any) => ({
+                id: m.id,
+                email: null,
+                display_name: nameById.get(m.id) || 'Device account',
+                avatar_url: null,
+                bio: null,
+                role: 'user',
+                status: 'offline',
+                is_banned: false,
+                created_at: null,
+                last_active_at: null,
+                message_count: m.message_count || 0,
+                conversation_count: m.conversation_count || 0,
+                unregistered: true,
+              }));
+            }
+
+            const everyone = [...mapped, ...extras].sort((a: any, b: any) =>
+              String(a.display_name || '').localeCompare(String(b.display_name || ''))
+            );
+            return new Response(JSON.stringify(everyone), { headers: corsHeaders });
           }
 
           // Promote a user to admin, or remove their admin role.
