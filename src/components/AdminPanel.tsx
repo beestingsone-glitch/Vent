@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
+  Shield,
   ShieldAlert,
   Users,
   MessageSquare,
@@ -210,6 +211,31 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
     await refreshConversations();
     setActiveConversationId(convId);
     onClose();
+  };
+
+  const handleSetRole = async (targetUserId: string, displayName: string, makeAdmin: boolean) => {
+    if (!token) return;
+    const confirm = window.confirm(
+      makeAdmin
+        ? `Make '${displayName}' an admin? They will get full access to this console.`
+        : `Remove admin from '${displayName}'?`
+    );
+    if (!confirm) return;
+
+    await safeFetchJson(`/api/admin/users/${targetUserId}/role`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ role: makeAdmin ? 'admin' : 'user' }),
+    });
+
+    setActionMessage(
+      makeAdmin ? `'${displayName}' is now an admin.` : `'${displayName}' is no longer an admin.`
+    );
+    fetchUsers();
+    setTimeout(() => setActionMessage(null), 3000);
   };
 
   const handleDeleteUser = async (targetUserId: string, displayName: string) => {
@@ -617,6 +643,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
                           <td className="p-3.5 text-right font-sans">
                             {!isSuper ? (
                               <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  onClick={() => handleSetRole(u.id, u.display_name, u.role !== 'admin')}
+                                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1 transition cursor-pointer ${
+                                    u.role === 'admin'
+                                      ? 'bg-purple-950/60 hover:bg-purple-900 text-purple-300 border border-purple-700/60'
+                                      : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600'
+                                  }`}
+                                  title={u.role === 'admin' ? 'Remove admin role' : 'Make this user an admin'}
+                                >
+                                  <Shield className="w-3 h-3" />
+                                  <span>{u.role === 'admin' ? 'Remove Admin' : 'Make Admin'}</span>
+                                </button>
+
                                 <button
                                   onClick={() => handleBanUser(u.id, u.is_banned)}
                                   className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1 transition cursor-pointer ${
