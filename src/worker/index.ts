@@ -351,8 +351,8 @@ export default {
           const avatarUrl = body.avatar_url ? body.avatar_url.toString().slice(0, 600) : null;
           const bio = body.bio ? body.bio.toString().slice(0, 200) : null;
           await env.DB.prepare(`
-            INSERT INTO users (id, email, display_name, avatar_url, bio)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO users (id, email, password_hash, display_name, avatar_url, bio)
+            VALUES (?, ?, '', ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               email = excluded.email,
               display_name = excluded.display_name,
@@ -388,10 +388,10 @@ export default {
           const logAudit = async (action: string, targetId: string | null, details: string) => {
             try {
               await env.DB.prepare(
-                'CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, action TEXT, actor_email TEXT, target_id TEXT, details TEXT, timestamp TEXT)'
+                'CREATE TABLE IF NOT EXISTS admin_audit_logs (id TEXT PRIMARY KEY, action TEXT, actor_email TEXT, target_id TEXT, details TEXT, timestamp TEXT)'
               ).run();
               await env.DB.prepare(
-                'INSERT INTO audit_logs (id, action, actor_email, target_id, details, timestamp) VALUES (?, ?, ?, ?, ?, datetime(\'now\'))'
+                'INSERT INTO admin_audit_logs (id, action, actor_email, target_id, details, timestamp) VALUES (?, ?, ?, ?, ?, datetime(\'now\'))'
               ).bind(
                 `audit-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
                 action,
@@ -551,10 +551,10 @@ export default {
           // Security & audit logs
           if (url.pathname === '/api/admin/audit-logs' && request.method === 'GET') {
             await env.DB.prepare(
-              'CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, action TEXT, actor_email TEXT, target_id TEXT, details TEXT, timestamp TEXT)'
+              'CREATE TABLE IF NOT EXISTS admin_audit_logs (id TEXT PRIMARY KEY, action TEXT, actor_email TEXT, target_id TEXT, details TEXT, timestamp TEXT)'
             ).run();
             const { results } = await env.DB.prepare(
-              'SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 100'
+              'SELECT * FROM admin_audit_logs ORDER BY timestamp DESC LIMIT 100'
             ).all();
             return new Response(JSON.stringify(results || []), { headers: corsHeaders });
           }
