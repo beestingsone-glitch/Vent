@@ -341,6 +341,241 @@ export default {
           );
         }
 
+        // --- USER DIRECTORY (real users only: people register themselves
+        // when they sign in, so demo/seed accounts never appear here) ---
+
+        // Register or refresh the caller's own directory entry
+        if (url.pathname === '/api/users/register' && request.method === 'POST') {
+          const body: any = await request.json().catch(() => ({}));
+          const displayName = (body.display_name || 'Vent Member').toString().slice(0, 80);
+          const avatarUrl = body.avatar_url ? body.avatar_url.toString().slice(0, 600) : null;
+          const bio = body.bio ? body.bio.toString().slice(0, 200) : null;
+          await env.DB.prepare(`
+            INSERT INTO users (id, email, display_name, avatar_url, bio, last_active_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(id) DO UPDATE SET
+              email = excluded.email,
+              display_name = excluded.display_name,
+              avatar_url = excluded.avatar_url,
+              bio = excluded.bio,
+              last_active_at = datetime('now')
+          `).bind(callerId, caller.email || null, displayName, avatarUrl, bio).run();
+          return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
+        }
+
+        // Search the directory of real users
+        if (url.pathname === '/api/users/search' && request.method === 'GET') {
+          const q = (url.searchParams.get('q') || '').trim();
+          const { results } = await env.DB.prepare(`
+            SELECT id, display_name, avatar_url, bio, status, last_active_at
+            FROM users
+            WHERE id != ? AND (? = '' OR display_name LIKE '%' || ? || '%')
+            ORDER BY display_name ASC
+            LIMIT 50
+          `).bind(callerId, q, q).all();
+          return new Response(JSON.stringify(results || []), { headers: corsHeaders });
+        }
+
+        // Leave the directory (remove own entry)
+        if (url.pathname === '/api/users/me' && request.method === 'DELETE') {
+          await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(callerId).run();
+          return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
+        }
+
+        // --- SUPER ADMIN ( Audit Console: real data from D1 ) ---
+        if (url.pathname.startsWith('/api/admin/')) {
+          if (!isAdmin) return forbidden();
+
+          const logAudit = async (action: string, targetId: string | null, details: string) => {
+            try {
+              await env.DB.prepare(
+                'CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, action TEXT, actor_email TEXT, target_id TEXT, details TEXT, timestamp TEXT)'
+              ).run();
+              await env.DB.prepare(
+                'INSERT INTO audit_logs (id, action, actor_email, target_id, details, timestamp) VALUES (?, ?, ?, ?, ?, datetime(\'now\'))'
+              ).bind(
+                `audit-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                action,
+                caller.email || callerId,
+                targetId,
+                details
+              ).run();
+            } catch {
+              /* audit logging must never break the action itself */
+            }
+          };
+
+          // Platform totals
+          if (url.pathname === '/api/admin/stats' && request.method === 'GET') {
+            const count = async (sql: string, ...binds: any[]): Promise<number> => {
+              const row: any = await env.DB.prepare(sql).bind(...binds).first();
+              return row && typeof row.n === 'number' ? row.n : 0;
+            };
+            const totalUsers = await count('SELECT COUNT(*) AS n FROM users');
+            const active24h = await count(
+              "SELECT COUNT(*) AS n FROM users WHERE last_active_at >= datetime('now', '-24 hours')"
+            );
+            const totalConversations = await count('SELECT COUNT(*) AS n FROM conversations');
+            const totalMessages = await count('SELECT COUNT(*) AS n FROM messages');
+            const mediaRow: any = await env.DB.prepare(
+              'SELECT COUNT(*) AS n, COALESCE(SUM(media_size), 0) AS bytes FROM messages WHERE media_url IS NOT NULL'
+            ).first();
+            let bannedUsers = 0;
+            try {
+              bannedUsers = await count('SELECT COUNT(*) AS n FROM users WHERE is_banned = 1');
+            } catch {
+              bannedUsers = 0;
+            }
+            return new Response(
+              JSON.stringify({
+                total_users: totalUsers,
+                active_users_24h: active24h,
+                total_conversations: totalConversations,
+                total_messages: totalMessages,
+                total_media_files: mediaRow?.n || 0,
+                total_storage_bytes: mediaRow?.bytes || 0,
+                banned_users: bannedUsers,
+              }),
+              { headers: corsHeaders }
+            );
+          }
+
+          // Full user directory with activity counts
+          if (url.pathname === '/api/admin/users' && request.method === 'GET') {
+            const { results } = await env.DB.prepare(`
+              SELECT u.*,
+                (SELECT COUNT(*) FROM messages m WHERE m.sender_id = u.id) AS message_count,
+                (SELECT COUNT(*) FROM conversation_members cm WHERE cm.user_id = u.id) AS conversation_count
+              FROM users u
+              ORDER BY u.display_name ASC
+            `).all();
+            const mapped = (results || []).map((u: any) => ({
+              ...u,
+              is_banned: !!u.is_banned,
+            }));
+            return new Response(JSON.stringify(mapped), { headers: corsHeaders });
+          }
+
+          // Ban / unban a user
+          const banMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/ban$/);
+          if (banMatch && request.method === 'POST') {
+            const targetId = banMatch[1];
+            const body: any = await request.json().catch(() => ({}));
+            const banned = body.is_banned ? 1 : 0;
+            await env.DB.prepare('UPDATE users SET is_banned = ? WHERE id = ?').bind(banned, targetId).run();
+            await logAudit(banned ? 'ban_user' : 'unban_user', targetId, `is_banned set to ${banned}`);
+            return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
+          }
+
+          // Permanently delete a user account (directory entry + memberships)
+          const deleteUserMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)$/);
+          if (deleteUserMatch && request.method === 'DELETE') {
+            const targetId = deleteUserMatch[1];
+            await env.DB.prepare('DELETE FROM conversation_members WHERE user_id = ?').bind(targetId).run();
+            await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(targetId).run();
+            await logAudit('delete_user', targetId, 'Account permanently deleted by admin');
+            return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
+          }
+
+          // Every conversation on the platform, with members
+          if (url.pathname === '/api/admin/conversations' && request.method === 'GET') {
+            const { results: convs } = await env.DB.prepare(
+              'SELECT * FROM conversations ORDER BY created_at DESC'
+            ).all();
+            const populated = await Promise.all(
+              (convs || []).map(async (conv: any) => {
+                const { results: members } = await env.DB.prepare(`
+                  SELECT cm.user_id, cm.role, u.display_name, u.avatar_url
+                  FROM conversation_members cm
+                  LEFT JOIN users u ON cm.user_id = u.id
+                  WHERE cm.conversation_id = ?
+                `).bind(conv.id).all();
+                return { ...conv, members: members || [] };
+              })
+            );
+            return new Response(JSON.stringify(populated), { headers: corsHeaders });
+          }
+
+          // Read any conversation's messages (audit inspector)
+          const adminMsgMatch = url.pathname.match(/^\/api\/admin\/conversations\/([^/]+)\/messages$/);
+          if (adminMsgMatch && request.method === 'GET') {
+            const convId = adminMsgMatch[1];
+            const { results } = await env.DB.prepare(`
+              SELECT
+                m.*,
+                COALESCE(m.sender_display_name, u.display_name, 'Vent Member') AS sender_display_name,
+                COALESCE(m.sender_avatar, u.avatar_url) AS sender_avatar
+              FROM messages m
+              LEFT JOIN users u ON m.sender_id = u.id
+              WHERE m.conversation_id = ?
+              ORDER BY m.created_at ASC
+            `).bind(convId).all();
+            return new Response(JSON.stringify(results || []), { headers: corsHeaders });
+          }
+
+          // Media library: every message that carries a file
+          if (url.pathname === '/api/admin/media' && request.method === 'GET') {
+            const { results } = await env.DB.prepare(`
+              SELECT
+                m.id AS id,
+                m.media_name AS file_name,
+                m.media_url AS file_url,
+                m.media_type AS file_type,
+                m.media_size AS file_size,
+                m.sender_id AS uploaded_by,
+                m.sender_display_name AS uploader_display_name,
+                u.email AS uploader_email,
+                m.conversation_id AS conversation_id,
+                c.name AS conversation_name,
+                m.created_at AS created_at
+              FROM messages m
+              LEFT JOIN users u ON m.sender_id = u.id
+              LEFT JOIN conversations c ON c.id = m.conversation_id
+              WHERE m.media_url IS NOT NULL
+              ORDER BY m.created_at DESC
+              LIMIT 200
+            `).all();
+            return new Response(JSON.stringify(results || []), { headers: corsHeaders });
+          }
+
+          // Remove a media file from its message
+          const deleteMediaMatch = url.pathname.match(/^\/api\/admin\/media\/([^/]+)$/);
+          if (deleteMediaMatch && request.method === 'DELETE') {
+            const mediaId = deleteMediaMatch[1];
+            await env.DB.prepare(
+              "UPDATE messages SET media_url = NULL, media_type = 'none', media_name = NULL, media_size = NULL WHERE id = ?"
+            ).bind(mediaId).run();
+            await logAudit('delete_media', mediaId, 'Media removed by admin');
+            return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
+          }
+
+          // Security & audit logs
+          if (url.pathname === '/api/admin/audit-logs' && request.method === 'GET') {
+            await env.DB.prepare(
+              'CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, action TEXT, actor_email TEXT, target_id TEXT, details TEXT, timestamp TEXT)'
+            ).run();
+            const { results } = await env.DB.prepare(
+              'SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 100'
+            ).all();
+            return new Response(JSON.stringify(results || []), { headers: corsHeaders });
+          }
+
+          // Purge expired ephemeral messages right now
+          if (url.pathname === '/api/admin/purge-ephemeral' && request.method === 'POST') {
+            const before: any = await env.DB.prepare(
+              "SELECT COUNT(*) AS n FROM messages WHERE expires_at IS NOT NULL AND expires_at <= datetime('now')"
+            ).first();
+            await env.DB.prepare(
+              "DELETE FROM messages WHERE expires_at IS NOT NULL AND expires_at <= datetime('now')"
+            ).run();
+            await logAudit('purge_ephemeral', null, `Purged ${before?.n || 0} expired messages`);
+            return new Response(
+              JSON.stringify({ purgedMessages: before?.n || 0, purgedFiles: 0 }),
+              { headers: corsHeaders }
+            );
+          }
+        }
+
         return new Response(JSON.stringify({ error: 'API route not found' }), {
           status: 404,
           headers: corsHeaders,
