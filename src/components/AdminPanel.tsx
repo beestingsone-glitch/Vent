@@ -330,8 +330,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
   const filteredUsers = usersList.filter((u) => {
     const q = userSearch.toLowerCase();
     return (
-      u.display_name.toLowerCase().includes(q) ||
-      u.email.toLowerCase().includes(q) ||
+      (u.display_name || '').toLowerCase().includes(q) ||
+      (u.email || '').toLowerCase().includes(q) ||
       u.id.toLowerCase().includes(q) ||
       (u.last_ip && u.last_ip.includes(q))
     );
@@ -340,8 +340,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
   const filteredMedia = mediaFiles.filter((m) => {
     const q = mediaSearch.toLowerCase();
     return (
-      m.file_name.toLowerCase().includes(q) ||
-      m.uploader_display_name.toLowerCase().includes(q) ||
+      (m.file_name || '').toLowerCase().includes(q) ||
+      (m.uploader_display_name || '').toLowerCase().includes(q) ||
       (m.uploader_email && m.uploader_email.toLowerCase().includes(q)) ||
       (m.conversation_name && m.conversation_name.toLowerCase().includes(q))
     );
@@ -351,8 +351,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
     const q = logSearch.toLowerCase();
     return (
       l.action.toLowerCase().includes(q) ||
-      l.actor_email.toLowerCase().includes(q) ||
-      l.details.toLowerCase().includes(q)
+      (l.actor_email || '').toLowerCase().includes(q) ||
+      (l.details || '').toLowerCase().includes(q)
     );
   });
 
@@ -574,7 +574,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
                   </thead>
                   <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
                     {filteredUsers.map((u) => {
-                      const isSuper = u.email.toLowerCase() === 'beestingsone@gmail.com';
+                      const isSuper = (u.email || '').toLowerCase() === 'beestingsone@gmail.com';
                       return (
                         <tr key={u.id} className="hover:bg-slate-800/40 transition">
                           <td className="p-3.5 font-sans">
