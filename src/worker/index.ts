@@ -34,6 +34,11 @@ function parseCaller(request: Request): { id: string; email: string } | null {
   return null;
 }
 
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 export default {
   // 1. Scheduled Background Cron: Purges expired ephemeral messages from D1
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
@@ -61,6 +66,48 @@ export default {
 
     if (url.pathname.startsWith('/api')) {
       try {
+        // --- SERVER ACCOUNT SIGN-IN (pre-auth) ---
+        // Device-local accounts sign in on-device as before. This route is
+        // for accounts that live on the server — above all the Google Play
+        // review account — so they can sign in on a fresh device where no
+        // local copy exists. Only sha256-tagged hashes are accepted here.
+        if (url.pathname === '/api/auth/login' && request.method === 'POST') {
+          const body: any = await request.json().catch(() => ({}));
+          const email = (body.email || '').toString().trim().toLowerCase();
+          const password = (body.password || '').toString();
+          const row: any = await env.DB.prepare(
+            'SELECT * FROM users WHERE email = ?'
+          ).bind(email).first();
+          let ok = false;
+          if (row && typeof row.password_hash === 'string' && row.password_hash.startsWith('sha256:')) {
+            ok = (await sha256Hex(password)) === row.password_hash.slice('sha256:'.length);
+          }
+          if (!row || !ok) {
+            return new Response(JSON.stringify({ error: 'Invalid email or password' }), {
+              status: 401,
+              headers: corsHeaders,
+            });
+          }
+          if (row.is_banned) {
+            return new Response(JSON.stringify({ error: 'This account has been banned' }), {
+              status: 403,
+              headers: corsHeaders,
+            });
+          }
+          return new Response(
+            JSON.stringify({
+              id: row.id,
+              email: row.email,
+              display_name: row.display_name,
+              avatar_url: row.avatar_url,
+              bio: row.bio,
+              role: row.role,
+              status: row.status,
+            }),
+            { headers: corsHeaders }
+          );
+        }
+
         // Every API route requires a signed-in caller, and conversation
         // data is only ever served to that conversation's members.
         const caller = parseCaller(request);
@@ -774,6 +821,39 @@ export default {
               'SELECT * FROM admin_audit_logs ORDER BY timestamp DESC LIMIT 100'
             ).all();
             return new Response(JSON.stringify(results || []), { headers: corsHeaders });
+          }
+
+          // Create/update the Google Play review account. Its sha256
+          // password hash is what /api/auth/login verifies, so the
+          // credentials in the Play Console work as a plain sign-in.
+          if (url.pathname === '/api/admin/review-account' && request.method === 'POST') {
+            const body: any = await request.json().catch(() => ({}));
+            const password = (body.password || '').toString();
+            if (password.length < 8) {
+              return new Response(
+                JSON.stringify({ error: 'Password must be at least 8 characters' }),
+                { status: 400, headers: corsHeaders }
+              );
+            }
+            const hash = 'sha256:' + (await sha256Hex(password));
+            const existing: any = await env.DB.prepare(
+              'SELECT id FROM users WHERE email = ?'
+            ).bind('reviewer@ventapp.chat').first();
+            const reviewId = (existing && existing.id) || 'usr-review-001';
+            await env.DB.prepare(`
+              INSERT INTO users (id, email, password_hash, display_name, avatar_url, bio, role, status)
+              VALUES (?, 'reviewer@ventapp.chat', ?, 'Play Reviewer', NULL, 'Google Play review account', 'user', 'online')
+              ON CONFLICT(email) DO UPDATE SET
+                password_hash = excluded.password_hash,
+                display_name = 'Play Reviewer',
+                role = 'user',
+                status = 'online'
+            `).bind(reviewId, hash).run();
+            await logAudit('seed_review_account', reviewId, 'Play review account created/updated');
+            return new Response(
+              JSON.stringify({ success: true, email: 'reviewer@ventapp.chat' }),
+              { headers: corsHeaders }
+            );
           }
 
           // Purge expired ephemeral messages right now
