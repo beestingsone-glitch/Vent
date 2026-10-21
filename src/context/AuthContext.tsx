@@ -111,20 +111,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Keep this account listed in the server user directory, so other real
   // users can find it by search (and it stops being invisible server-side).
+  // Also pick up the role the server has for this account, so a user the
+  // owner promoted to admin gets the console on their own device.
   useEffect(() => {
     if (!user || !token) return;
-    safeFetchJson('/api/users/register', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        display_name: user.display_name,
-        avatar_url: user.avatar_url,
-        bio: user.bio,
-      }),
-    }).catch(() => {});
+    (async () => {
+      await safeFetchJson('/api/users/register', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          display_name: user.display_name,
+          avatar_url: user.avatar_url,
+          bio: user.bio,
+        }),
+      }).catch(() => {});
+
+      const me = await safeFetchJson<{ role?: string }>('/api/users/me', {
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => null);
+      if (me?.data?.role && me.data.role !== user.role) {
+        const updated = { ...user, role: me.data.role as AuthUser['role'] };
+        setUser(updated);
+        safeSetItem(LOCAL_CURRENT_USER_KEY, JSON.stringify(sanitizeLightweightUser(updated)));
+      }
+    })();
   }, [user, token]);
 
   // 100% Client-Side Pure Browser Sign In
@@ -202,7 +215,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(lightweight);
   };
 
-  const isAdmin = user?.email?.toLowerCase() === 'beestingsone@gmail.com' && user?.role === 'admin';
+  const isAdmin = !!user && user.role === 'admin';
 
   return (
     <AuthContext.Provider
