@@ -72,9 +72,21 @@ export default {
         }
         const callerId = caller.id;
         const adminEmail = (env.SUPER_ADMIN_EMAIL || 'beestingsone@gmail.com').toLowerCase();
-        const isAdmin =
+        // The owner is always admin. Anyone else is an admin when their
+        // directory record carries role = 'admin' (managed from the console).
+        let isAdmin =
           callerId === 'usr-super-admin-001' ||
           (caller.email && caller.email.toLowerCase() === adminEmail);
+        if (!isAdmin) {
+          try {
+            const roleRow: any = await env.DB.prepare(
+              'SELECT role FROM users WHERE id = ?'
+            ).bind(callerId).first();
+            if (roleRow && roleRow.role === 'admin') isAdmin = true;
+          } catch {
+            /* directory lookup failed; owner check above still applies */
+          }
+        }
 
         // True when the caller belongs to the conversation. Legacy
         // conversations with no member rows at all stay visible to the
@@ -362,6 +374,29 @@ export default {
           return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
         }
 
+        // The caller's own directory profile (the app reads its role here,
+        // so people promoted to admin get the console on their own device)
+        if (url.pathname === '/api/users/me' && request.method === 'GET') {
+          const row: any = await env.DB.prepare(
+            'SELECT id, email, display_name, avatar_url, bio, role, status FROM users WHERE id = ?'
+          ).bind(callerId).first();
+          if (row) {
+            return new Response(JSON.stringify(row), { headers: corsHeaders });
+          }
+          return new Response(
+            JSON.stringify({
+              id: callerId,
+              email: caller.email || null,
+              display_name: null,
+              avatar_url: null,
+              bio: null,
+              role: isAdmin ? 'admin' : 'user',
+              status: 'offline',
+            }),
+            { headers: corsHeaders }
+          );
+        }
+
         // Search the directory of real users
         if (url.pathname === '/api/users/search' && request.method === 'GET') {
           const q = (url.searchParams.get('q') || '').trim();
@@ -453,6 +488,34 @@ export default {
               return { ...rest, is_banned: !!u.is_banned };
             });
             return new Response(JSON.stringify(mapped), { headers: corsHeaders });
+          }
+
+          // Promote a user to admin, or remove their admin role.
+          // The owner account can never be demoted.
+          const roleMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/role$/);
+          if (roleMatch && request.method === 'POST') {
+            const targetId = roleMatch[1];
+            const body: any = await request.json().catch(() => ({}));
+            const role = body.role === 'admin' ? 'admin' : 'user';
+            const target: any = await env.DB.prepare(
+              'SELECT email FROM users WHERE id = ?'
+            ).bind(targetId).first();
+            if (
+              targetId === 'usr-super-admin-001' ||
+              (target && target.email && target.email.toLowerCase() === adminEmail)
+            ) {
+              return new Response(
+                JSON.stringify({ error: 'The owner account always stays admin' }),
+                { status: 400, headers: corsHeaders }
+              );
+            }
+            await env.DB.prepare('UPDATE users SET role = ? WHERE id = ?').bind(role, targetId).run();
+            await logAudit(
+              role === 'admin' ? 'promote_admin' : 'demote_admin',
+              targetId,
+              `Role set to ${role}`
+            );
+            return new Response(JSON.stringify({ success: true, role }), { headers: corsHeaders });
           }
 
           // Ban / unban a user
